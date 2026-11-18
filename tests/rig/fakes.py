@@ -41,9 +41,14 @@ def load_state(name, kind):
     return s
 
 
+EPOCH = 1.7e9   # counters start as if they had run at their rate since 2023
+
+
 class Counters:
     """Monotonic counters integrated over time, so changing a rate mid-test
-    never makes a counter go backwards."""
+    never makes a counter go backwards. They start from wall-clock time at
+    their rate, so a restart of the fakes is not seen as a counter reset (which
+    Prometheus would turn into a burst, e.g. 90% CPU)."""
     def __init__(self):
         self.lock = threading.Lock()
         self.last = {}
@@ -54,9 +59,9 @@ class Counters:
         with self.lock:
             dt = now - self.last.get(key, now)
             self.last[key] = now
-            v = self.vals.setdefault(key, {k: 1000.0 for k in rates})
+            v = self.vals.setdefault(key, {k: (now - EPOCH) * r for k, r in rates.items()})
             for k, r in rates.items():
-                v[k] = v.get(k, 1000.0) + dt * r
+                v[k] = v.get(k, (now - EPOCH) * r) + dt * r
             return dict(v)
 
 

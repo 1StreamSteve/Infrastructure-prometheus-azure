@@ -1,512 +1,452 @@
 # /etc/grafana/provisioning/alerting/rules.yml
-# Grafana unified alerting rules — all backed by the local Prometheus data source.
+# Grafana-managed alert rules on the local Prometheus. Managed in git
+# (Infrastructure-prometheus-azure): sync.sh overwrites it, and rules
+# provisioned from file cannot be edited in the UI.
 #
-# Alert summary:
-#   NginxDown           — nginx process gone on any VM            → critical, 1 min
-#   ExporterDown        — nginx exporter unreachable               → warning,  2 min
-#   HighActiveConns     — active connections > 400                 → warning,  5 min
-#   High5xxRate         — >1% of requests returning 5xx           → critical, 5 min
-#   HighCPU             — CPU usage > 85%                         → warning,  5 min
-#   LowMemory           — available memory < 10%                  → warning,  5 min
-#   LowDisk             — root partition < 20% free               → warning,  5 min
-#   HighLoad            — 1-min load > (2 × num_cpus)             → warning,  5 min
+# Every rule is: A = Prometheus instant query, B = Reduce (last),
+# C = Threshold on B. That makes each rule multi-dimensional: one alert per
+# server or probe, carrying that series' labels (customer, vm, instance, site).
+# The June build used classic conditions, which collapse every series into a
+# single alert with no labels, so notifications could not say what tripped.
 #
-# Postgres-specific:
-#   PostgresDown        — postgres_exporter unreachable            → critical, 1 min
-#   HighPgConnections   — REMOVED (2000 max_connections makes this impractical)
-#   LongRunningTx       — transaction open > 5 min                -> warning,  5 min
-#   PgReplicationLag    — replication lag > 30s                   → warning,  5 min
-#   PgDeadlocks         — deadlocks detected (rate > 0)          → warning,  5 min
+# Annotations: summary and description for the email body; value is the
+# short reading shown at the end of the email and SMS subject
+# (templates.yml, "1stream.subject").
 #
-# Odoo-specific:
-#   OdooVmDown          — Odoo VM node_exporter unreachable       → critical, 1 min
+# noDataState OK everywhere: a query with nothing to report (no slow probes,
+# no long transactions, a removed customer) is healthy, not an alert.
+# execErrState Error stays, so a broken Prometheus still raises an alert.
 #
-# Blackbox HTTP probes:
-#   SiteDown            — HTTP probe failing                      → critical, 2 min
-#   SlowResponse        — response time > 5s                      → warning,  5 min
-#   SSLCertExpiringSoon  — SSL cert expires within 14 days        → warning,  0 min
+#   Rule                    Fires when                                        Sev       For
+#   NginxDown               nginx_up = 0 on an nginx VM                       critical  1m
+#   ExporterDown            nginx exporter unreachable                        warning   2m
+#   HighActiveConnections   nginx active connections > 400                    warning   5m
+#   HighCPU                 CPU > 85% (5m average)                            warning   5m
+#   LowMemory               available memory < 10%                            warning   5m
+#   LowDisk                 root filesystem < 20% free                        warning   5m
+#   HighSystemLoad          1-min load > 4.0                                  warning   5m
+#   PostgresDown            postgres_exporter unreachable                     critical  1m
+#   LongRunningTransaction  a transaction open > 300s                         warning   5m
+#   PgDeadlocks             deadlocks happening                               warning   5m
+#   OdooVmDown              Odoo VM node_exporter unreachable                 critical  1m
+#   SiteDown                customer Odoo probe failing                       critical  2m
+#   SlowResponse            customer Odoo probe > 5s (successful probes)      warning   5m
+#   SSLCertExpiringSoon     certificate expires within 14 days                warning   0
+#   ExternalSiteDown        every external probe failed for 5 minutes        critical  1m
+#   ExternalSiteDegraded    over half the external probes failed in 15 min   warning   0   (email only)
+#   ExternalSlowResponse    median successful external probe > 5s over 10m   warning   5m
 
 apiVersion: 1
 
+deleteRules: []
+
 groups:
 
-  # ── nginx health ───────────────────────────────────────────────────────────
-  - orgId:    1
-    name:     nginx-health
-    folder:   1Stream Alerts
+  # ── nginx ──────────────────────────────────────────────────────────────────
+  - orgId: 1
+    name: nginx-health
+    folder: 1Stream Alerts
     interval: 1m
     rules:
-
-      - uid:    nginx-down
-        title:  NginxDown
-        for:    1m
-        condition: B
-        noDataState:  OK
+      - uid: nginx-down
+        title: NginxDown
+        condition: C
+        for: 1m
+        noDataState: OK
         execErrState: Error
+        labels: {severity: critical}
         annotations:
-          summary:     "[{{ $labels.customer }}] nginx DOWN on {{ $labels.vm }} ({{ $labels.instance }})"
-          description: "nginx_up has been 0 for >1 minute on {{ $labels.vm }} ({{ $labels.instance }}). Customer: {{ $labels.customer }}. Check the VM immediately."
-        labels:
-          severity: critical
+          summary: "nginx is down on {{ $labels.vm }}"
+          description: "nginx_up has been 0 for over a minute on {{ $labels.vm }} ({{ $labels.instance }}). Check nginx on the VM."
+          value: "nginx_up {{ $values.B.Value }}"
         data:
           - refId: A
             datasourceUid: prometheus-ds
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              expr:        "nginx_up"
-              instant:     true
-              refId:       A
-          - refId: B
-            datasourceUid: "-100"
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              type: classic_conditions
-              refId: B
-              conditions:
-                - evaluator: { type: lt, params: [1] }
-                  operator:  { type: and }
-                  query:     { params: [A] }
-                  reducer:   { type: last }
+            relativeTimeRange: {from: 300, to: 0}
+            model: {refId: A, instant: true, expr: 'nginx_up'}
+          - &reduceB
+            refId: B
+            datasourceUid: __expr__
+            model: {refId: B, type: reduce, expression: A, reducer: last}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: lt, params: [1]}}]}
 
-      - uid:    exporter-down
-        title:  ExporterDown
-        for:    2m
-        condition: B
-        noDataState:  OK
+      - uid: exporter-down
+        title: ExporterDown
+        condition: C
+        for: 2m
+        noDataState: OK
         execErrState: Error
+        labels: {severity: warning}
         annotations:
-          summary:     "[{{ $labels.customer }}] nginx exporter unreachable on {{ $labels.vm }} ({{ $labels.instance }})"
-          description: "Cannot scrape :9113 on {{ $labels.vm }} ({{ $labels.instance }}) for >2 minutes. Customer: {{ $labels.customer }}. Exporter may have crashed."
-        labels:
-          severity: warning
+          summary: "nginx exporter unreachable on {{ $labels.vm }}"
+          description: "Prometheus cannot scrape {{ $labels.instance }} ({{ $labels.vm }}) for over 2 minutes. The exporter may have stopped."
+          value: "up {{ $values.B.Value }}"
         data:
           - refId: A
             datasourceUid: prometheus-ds
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              expr:    "up{job=~\"nginx-.*\"}"
-              instant: true
-              refId:   A
-          - refId: B
-            datasourceUid: "-100"
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              type: classic_conditions
-              refId: B
-              conditions:
-                - evaluator: { type: lt, params: [1] }
-                  operator:  { type: and }
-                  query:     { params: [A] }
-                  reducer:   { type: last }
+            relativeTimeRange: {from: 300, to: 0}
+            model: {refId: A, instant: true, expr: 'up{job=~"nginx-.*"}'}
+          - *reduceB
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: lt, params: [1]}}]}
 
-  # ── nginx traffic ──────────────────────────────────────────────────────────
-  - orgId:    1
-    name:     nginx-traffic
-    folder:   1Stream Alerts
+  - orgId: 1
+    name: nginx-traffic
+    folder: 1Stream Alerts
     interval: 1m
     rules:
-
-      - uid:    high-active-conns
-        title:  HighActiveConnections
-        for:    5m
-        condition: B
-        noDataState:  NoData
+      - uid: high-active-conns
+        title: HighActiveConnections
+        condition: C
+        for: 5m
+        noDataState: OK
         execErrState: Error
+        labels: {severity: warning}
         annotations:
-          summary:     "[{{ $labels.customer }}] High active connections on {{ $labels.vm }}: {{ $values.A }} ({{ $labels.instance }})"
-          description: "Active nginx connections have exceeded 400 for >5 minutes on {{ $labels.vm }} ({{ $labels.instance }}). Customer: {{ $labels.customer }}. May indicate a traffic surge or slow backend."
-        labels:
-          severity: warning
+          summary: "High active connections on {{ $labels.vm }}"
+          description: "Active nginx connections have been over 400 for 5 minutes on {{ $labels.vm }}. A traffic surge or a slow backend."
+          value: "{{ printf \"%.0f\" $values.B.Value }} connections"
         data:
           - refId: A
             datasourceUid: prometheus-ds
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              expr:    "nginx_connections_active"
-              instant: true
-              refId:   A
-          - refId: B
-            datasourceUid: "-100"
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              type: classic_conditions
-              refId: B
-              conditions:
-                - evaluator: { type: gt, params: [400] }
-                  operator:  { type: and }
-                  query:     { params: [A] }
-                  reducer:   { type: last }
+            relativeTimeRange: {from: 300, to: 0}
+            model: {refId: A, instant: true, expr: 'nginx_connections_active'}
+          - *reduceB
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [400]}}]}
 
-  # ── OS health ─────────────────────────────────────────────────────────────
-  - orgId:    1
-    name:     os-health
-    folder:   1Stream Alerts
+  # ── OS, every VM with node_exporter ────────────────────────────────────────
+  - orgId: 1
+    name: os-health
+    folder: 1Stream Alerts
     interval: 1m
     rules:
-
-      - uid:    high-cpu
-        title:  HighCPU
-        for:    5m
-        condition: B
-        noDataState:  NoData
+      - uid: high-cpu
+        title: HighCPU
+        condition: C
+        for: 5m
+        noDataState: OK
         execErrState: Error
+        labels: {severity: warning}
         annotations:
-          summary:     "[{{ $labels.customer }}] High CPU on {{ $labels.vm }}: {{ $values.A | printf \"%.0f\" }}%"
-          description: "CPU utilisation has been above 85% for >5 minutes on {{ $labels.vm }}. Customer: {{ $labels.customer }}."
-        labels:
-          severity: warning
+          summary: "High CPU on {{ $labels.vm }}"
+          description: "CPU has been over 85% for 5 minutes on {{ $labels.vm }} ({{ $labels.customer }})."
+          value: "{{ printf \"%.0f\" $values.B.Value }}%"
         data:
           - refId: A
             datasourceUid: prometheus-ds
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              expr:    "100 - (avg by (vm) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)"
-              instant: true
-              refId:   A
-          - refId: B
-            datasourceUid: "-100"
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              type: classic_conditions
-              refId: B
-              conditions:
-                - evaluator: { type: gt, params: [85] }
-                  operator:  { type: and }
-                  query:     { params: [A] }
-                  reducer:   { type: last }
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: '100 - (avg by (customer, vm, instance, role) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)'}
+          - *reduceB
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [85]}}]}
 
-      - uid:    low-memory
-        title:  LowMemory
-        for:    5m
-        condition: B
-        noDataState:  NoData
+      - uid: low-memory
+        title: LowMemory
+        condition: C
+        for: 5m
+        noDataState: OK
         execErrState: Error
+        labels: {severity: warning}
         annotations:
-          summary:     "[{{ $labels.customer }}] Low memory on {{ $labels.vm }}: {{ $values.A | printf \"%.0f\" }}% free"
-          description: "Available memory has been below 10% for >5 minutes on {{ $labels.vm }}. Customer: {{ $labels.customer }}."
-        labels:
-          severity: warning
+          summary: "Low memory on {{ $labels.vm }}"
+          description: "Available memory has been under 10% for 5 minutes on {{ $labels.vm }} ({{ $labels.customer }})."
+          value: "{{ printf \"%.0f\" $values.B.Value }}% free"
         data:
           - refId: A
             datasourceUid: prometheus-ds
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              expr:    "(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100"
-              instant: true
-              refId:   A
-          - refId: B
-            datasourceUid: "-100"
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              type: classic_conditions
-              refId: B
-              conditions:
-                - evaluator: { type: lt, params: [10] }
-                  operator:  { type: and }
-                  query:     { params: [A] }
-                  reducer:   { type: last }
+            relativeTimeRange: {from: 300, to: 0}
+            model: {refId: A, instant: true, expr: '(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100'}
+          - *reduceB
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: lt, params: [10]}}]}
 
-      - uid:    low-disk
-        title:  LowDisk
-        for:    5m
-        condition: B
-        noDataState:  NoData
+      - uid: low-disk
+        title: LowDisk
+        condition: C
+        for: 5m
+        noDataState: OK
         execErrState: Error
+        labels: {severity: warning}
         annotations:
-          summary:     "[{{ $labels.customer }}] Low disk on {{ $labels.vm }}: {{ $values.A | printf \"%.0f\" }}% free"
-          description: "Root filesystem free space has been below 20% for >5 minutes on {{ $labels.vm }}. Customer: {{ $labels.customer }}."
-        labels:
-          severity: warning
+          summary: "Low disk on {{ $labels.vm }}"
+          description: "The root filesystem has been under 20% free for 5 minutes on {{ $labels.vm }} ({{ $labels.customer }})."
+          value: "{{ printf \"%.0f\" $values.B.Value }}% free"
         data:
           - refId: A
             datasourceUid: prometheus-ds
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              expr:    "(node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|overlay\"}) * 100"
-              instant: true
-              refId:   A
-          - refId: B
-            datasourceUid: "-100"
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              type: classic_conditions
-              refId: B
-              conditions:
-                - evaluator: { type: lt, params: [20] }
-                  operator:  { type: and }
-                  query:     { params: [A] }
-                  reducer:   { type: last }
+            relativeTimeRange: {from: 300, to: 0}
+            model: {refId: A, instant: true, expr: '(node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}) * 100'}
+          - *reduceB
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: lt, params: [20]}}]}
 
-      - uid:    high-load
-        title:  HighSystemLoad
-        for:    5m
-        condition: B
-        noDataState:  NoData
+      - uid: high-load
+        title: HighSystemLoad
+        condition: C
+        for: 5m
+        noDataState: OK
         execErrState: Error
+        labels: {severity: warning}
         annotations:
-          summary:     "[{{ $labels.customer }}] High system load on {{ $labels.vm }}: {{ $values.A | printf \"%.2f\" }}"
-          description: "1-minute load average has been above 4.0 for >5 minutes on {{ $labels.vm }}. Customer: {{ $labels.customer }}. Threshold = 2x CPU count for a 2-vCPU VM."
-        labels:
-          severity: warning
+          summary: "High system load on {{ $labels.vm }}"
+          description: "The 1-minute load average has been over 4.0 (2x the CPUs of a 2-vCPU VM) for 5 minutes on {{ $labels.vm }} ({{ $labels.customer }})."
+          value: "load {{ printf \"%.2f\" $values.B.Value }}"
         data:
           - refId: A
             datasourceUid: prometheus-ds
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              expr:    "node_load1"
-              instant: true
-              refId:   A
-          - refId: B
-            datasourceUid: "-100"
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              type: classic_conditions
-              refId: B
-              conditions:
-                - evaluator: { type: gt, params: [4.0] }
-                  operator:  { type: and }
-                  query:     { params: [A] }
-                  reducer:   { type: last }
+            relativeTimeRange: {from: 300, to: 0}
+            model: {refId: A, instant: true, expr: 'node_load1'}
+          - *reduceB
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [4]}}]}
 
-  # ── Postgres health ────────────────────────────────────────────────────────
-  - orgId:    1
-    name:     postgres-health
-    folder:   1Stream Alerts
+  # ── Postgres ───────────────────────────────────────────────────────────────
+  - orgId: 1
+    name: postgres-health
+    folder: 1Stream Alerts
     interval: 1m
     rules:
-
-      - uid:    postgres-down
-        title:  PostgresDown
-        for:    1m
-        condition: B
-        noDataState:  OK
+      - uid: postgres-down
+        title: PostgresDown
+        condition: C
+        for: 1m
+        noDataState: OK
         execErrState: Error
+        labels: {severity: critical}
         annotations:
-          summary:     "[{{ $labels.customer }}] PostgreSQL DOWN on {{ $labels.vm }} ({{ $labels.instance }})"
-          description: "Cannot scrape :9187 on {{ $labels.vm }} ({{ $labels.instance }}) for >1 minute. Customer: {{ $labels.customer }}. PostgreSQL or the exporter may be down."
-        labels:
-          severity: critical
+          summary: "PostgreSQL unreachable on {{ $labels.vm }}"
+          description: "Prometheus cannot scrape postgres_exporter on {{ $labels.vm }} ({{ $labels.instance }}) for over a minute. PostgreSQL or the exporter may be down."
+          value: "up {{ $values.B.Value }}"
         data:
           - refId: A
             datasourceUid: prometheus-ds
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              expr:    "up{job=~\"postgres-.*\"}"
-              instant: true
-              refId:   A
-          - refId: B
-            datasourceUid: "-100"
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              type: classic_conditions
-              refId: B
-              conditions:
-                - evaluator: { type: lt, params: [1] }
-                  operator:  { type: and }
-                  query:     { params: [A] }
-                  reducer:   { type: last }
+            relativeTimeRange: {from: 300, to: 0}
+            model: {refId: A, instant: true, expr: 'up{job=~"postgres-.*"}'}
+          - *reduceB
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: lt, params: [1]}}]}
 
-      # HighPgConnections removed -- 2000 max_connections with 15 workers/tenant
-      # makes this rule impractical. Grafana's alert evaluator also intermittently
-      # fails on the group_left query, causing DatasourceNoData false alerts.
-      # Re-add if connection counts become a real concern.
+      # HighPgConnections was removed in June: 2000 max_connections with 15
+      # workers per tenant makes a percentage threshold meaningless.
 
-      - uid:    long-running-tx
-        title:  LongRunningTransaction
-        for:    5m
-        condition: B
-        noDataState:  NoData
+      - uid: long-running-tx
+        title: LongRunningTransaction
+        condition: C
+        for: 5m
+        noDataState: OK
         execErrState: Error
+        labels: {severity: warning}
         annotations:
-          summary:     "[{{ $labels.customer }}] Long-running transaction on {{ $labels.vm }}: {{ $values.A | printf \"%.0f\" }}s"
-          description: "A transaction has been open for >5 minutes on {{ $labels.vm }}. Customer: {{ $labels.customer }}. May cause lock contention or bloat."
-        labels:
-          severity: warning
+          summary: "Long-running transaction on {{ $labels.vm }}"
+          description: "A transaction has been open for over 5 minutes on {{ $labels.vm }} ({{ $labels.customer }}). It can hold locks and cause bloat."
+          value: "{{ printf \"%.0f\" $values.B.Value }}s open"
         data:
           - refId: A
             datasourceUid: prometheus-ds
-            relativeTimeRange: { from: 600, to: 0 }
-            model:
-              expr:    "max by (vm) (pg_stat_activity_max_tx_duration{state!='idle'})"
-              instant: true
-              refId:   A
-          - refId: B
-            datasourceUid: "-100"
-            relativeTimeRange: { from: 600, to: 0 }
-            model:
-              type: classic_conditions
-              refId: B
-              conditions:
-                - evaluator: { type: gt, params: [300] }
-                  operator:  { type: and }
-                  query:     { params: [A] }
-                  reducer:   { type: last }
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: 'max by (customer, vm, instance) (pg_stat_activity_max_tx_duration{state!="idle"})'}
+          - *reduceB
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [300]}}]}
 
-      - uid:    pg-deadlocks
-        title:  PgDeadlocks
-        for:    5m
-        condition: B
-        noDataState:  NoData
+      - uid: pg-deadlocks
+        title: PgDeadlocks
+        condition: C
+        for: 5m
+        noDataState: OK
         execErrState: Error
+        labels: {severity: warning}
         annotations:
-          summary:     "[{{ $labels.customer }}] Deadlocks detected on {{ $labels.vm }}"
-          description: "Postgres deadlock rate > 0 for >5 minutes on {{ $labels.vm }}. Customer: {{ $labels.customer }}. Investigate application locking patterns."
-        labels:
-          severity: warning
+          summary: "Deadlocks on {{ $labels.vm }} ({{ $labels.datname }})"
+          description: "PostgreSQL has been reporting deadlocks for 5 minutes on {{ $labels.vm }}, database {{ $labels.datname }} ({{ $labels.customer }}). Look at the application's locking."
+          value: "{{ printf \"%.3f\" $values.B.Value }}/s"
         data:
           - refId: A
             datasourceUid: prometheus-ds
-            relativeTimeRange: { from: 600, to: 0 }
-            model:
-              expr:    "rate(pg_stat_database_deadlocks[5m])"
-              instant: true
-              refId:   A
-          - refId: B
-            datasourceUid: "-100"
-            relativeTimeRange: { from: 600, to: 0 }
-            model:
-              type: classic_conditions
-              refId: B
-              conditions:
-                - evaluator: { type: gt, params: [0] }
-                  operator:  { type: and }
-                  query:     { params: [A] }
-                  reducer:   { type: last }
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: 'sum by (customer, vm, instance, datname) (rate(pg_stat_database_deadlocks[5m]))'}
+          - *reduceB
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [0]}}]}
 
-  # ── Odoo VM health ────────────────────────────────────────────────────────
-  - orgId:    1
-    name:     odoo-health
-    folder:   1Stream Alerts
+  # ── Odoo VMs ───────────────────────────────────────────────────────────────
+  - orgId: 1
+    name: odoo-health
+    folder: 1Stream Alerts
     interval: 1m
     rules:
-
-      - uid:    odoo-vm-down
-        title:  OdooVmDown
-        for:    1m
-        condition: B
-        noDataState:  OK
+      - uid: odoo-vm-down
+        title: OdooVmDown
+        condition: C
+        for: 1m
+        noDataState: OK
         execErrState: Error
+        labels: {severity: critical}
         annotations:
-          summary:     "[{{ $labels.customer }}] Odoo VM unreachable: {{ $labels.vm }} ({{ $labels.instance }})"
-          description: "Cannot scrape node_exporter on {{ $labels.vm }} ({{ $labels.instance }}) for >1 minute. Customer: {{ $labels.customer }}. The VM may be down."
-        labels:
-          severity: critical
+          summary: "Odoo VM unreachable: {{ $labels.vm }}"
+          description: "Prometheus cannot scrape node_exporter on {{ $labels.vm }} ({{ $labels.instance }}) for over a minute. The VM may be down."
+          value: "up {{ $values.B.Value }}"
         data:
           - refId: A
             datasourceUid: prometheus-ds
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              expr:    "up{job=~\"node-.*-odoo\"}"
-              instant: true
-              refId:   A
-          - refId: B
-            datasourceUid: "-100"
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              type: classic_conditions
-              refId: B
-              conditions:
-                - evaluator: { type: lt, params: [1] }
-                  operator:  { type: and }
-                  query:     { params: [A] }
-                  reducer:   { type: last }
+            relativeTimeRange: {from: 300, to: 0}
+            model: {refId: A, instant: true, expr: 'up{job=~"node-.*-odoo"}'}
+          - *reduceB
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: lt, params: [1]}}]}
 
-  # ── Blackbox HTTP probes ───────────────────────────────────────────────────
-  - orgId:    1
-    name:     blackbox-health
-    folder:   1Stream Alerts
+  # ── Customer Odoo probes (inside Azure, so kept tight) ─────────────────────
+  - orgId: 1
+    name: blackbox-health
+    folder: 1Stream Alerts
     interval: 1m
     rules:
-
-      - uid:    site-down
-        title:  SiteDown
-        for:    2m
-        condition: B
-        noDataState:  OK
+      - uid: site-down
+        title: SiteDown
+        condition: C
+        for: 2m
+        noDataState: OK
         execErrState: Error
+        labels: {severity: critical}
         annotations:
-          summary:     "[{{ $labels.customer }}] Site DOWN: {{ $labels.instance }}"
-          description: "HTTP probe to {{ $labels.instance }} has been failing for >2 minutes. Customer: {{ $labels.customer }}."
-        labels:
-          severity: critical
+          summary: "Odoo not answering for {{ $labels.customer }}"
+          description: "The HTTP probe to {{ $labels.instance }} ({{ $labels.customer }}) has been failing for over 2 minutes."
+          value: "probe failing"
         data:
           - refId: A
             datasourceUid: prometheus-ds
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              expr:    "probe_success{job=~\"blackbox-.*\"}"
-              instant: true
-              refId:   A
-          - refId: B
-            datasourceUid: "-100"
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              type: classic_conditions
-              refId: B
-              conditions:
-                - evaluator: { type: lt, params: [1] }
-                  operator:  { type: and }
-                  query:     { params: [A] }
-                  reducer:   { type: last }
+            relativeTimeRange: {from: 300, to: 0}
+            model: {refId: A, instant: true, expr: 'probe_success{job=~"blackbox-.*", job!~"blackbox-ext-.*"}'}
+          - *reduceB
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: lt, params: [1]}}]}
 
-      - uid:    slow-response
-        title:  SlowResponse
-        for:    5m
-        condition: B
-        noDataState:  NoData
+      - uid: slow-response
+        title: SlowResponse
+        condition: C
+        for: 5m
+        noDataState: OK
         execErrState: Error
+        labels: {severity: warning}
         annotations:
-          summary:     "[{{ $labels.customer }}] Slow response: {{ $labels.instance }} ({{ $values.A | printf \"%.2f\" }}s)"
-          description: "HTTP response time for {{ $labels.instance }} has exceeded 5 seconds for >5 minutes. Customer: {{ $labels.customer }}."
-        labels:
-          severity: warning
+          summary: "Odoo slow for {{ $labels.customer }}"
+          description: "Successful probes to {{ $labels.instance }} ({{ $labels.customer }}) have taken over 5 seconds for 5 minutes."
+          value: "{{ printf \"%.1f\" $values.B.Value }}s"
         data:
           - refId: A
             datasourceUid: prometheus-ds
-            relativeTimeRange: { from: 600, to: 0 }
-            model:
-              expr:    "probe_duration_seconds{job=~\"blackbox-.*\"}"
-              instant: true
-              refId:   A
-          - refId: B
-            datasourceUid: "-100"
-            relativeTimeRange: { from: 600, to: 0 }
-            model:
-              type: classic_conditions
-              refId: B
-              conditions:
-                - evaluator: { type: gt, params: [5] }
-                  operator:  { type: and }
-                  query:     { params: [A] }
-                  reducer:   { type: avg }
+            relativeTimeRange: {from: 300, to: 0}
+            # Successful probes only: a failed probe's duration is its timeout,
+            # and a site that is down is SiteDown's job, not this one's.
+            model: {refId: A, instant: true, expr: 'probe_duration_seconds{job=~"blackbox-.*", job!~"blackbox-ext-.*"} and probe_success == 1'}
+          - *reduceB
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [5]}}]}
 
-      - uid:    ssl-cert-expiring
-        title:  SSLCertExpiringSoon
-        for:    0s
-        condition: B
-        noDataState:  NoData
+      - uid: ssl-cert-expiring
+        title: SSLCertExpiringSoon
+        condition: C
+        for: 0s
+        noDataState: OK
         execErrState: Error
+        labels: {severity: warning}
         annotations:
-          summary:     "[{{ $labels.customer }}] SSL cert expiring: {{ $labels.instance }} ({{ $values.A | printf \"%.0f\" }} days left)"
-          description: "The SSL certificate for {{ $labels.instance }} expires in less than 14 days. Customer: {{ $labels.customer }}."
-        labels:
-          severity: warning
+          summary: "Certificate expiring for {{ $labels.instance }}"
+          description: "The TLS certificate served by {{ $labels.instance }} expires in under 14 days."
+          value: "{{ printf \"%.0f\" $values.B.Value }} days left"
         data:
           - refId: A
             datasourceUid: prometheus-ds
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              expr:    "(probe_ssl_earliest_cert_expiry{job=~\"blackbox-.*\"} - time()) / 86400"
-              instant: true
-              refId:   A
-          - refId: B
-            datasourceUid: "-100"
-            relativeTimeRange: { from: 300, to: 0 }
-            model:
-              type: classic_conditions
-              refId: B
-              conditions:
-                - evaluator: { type: lt, params: [14] }
-                  operator:  { type: and }
-                  query:     { params: [A] }
-                  reducer:   { type: last }
+            relativeTimeRange: {from: 300, to: 0}
+            model: {refId: A, instant: true, expr: '(probe_ssl_earliest_cert_expiry{job=~"blackbox-.*"} - time()) / 86400'}
+          - *reduceB
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: lt, params: [14]}}]}
+
+  # ── External sites, probed from Azure across the internet ──────────────────
+  # The path from Azure to Bree Street has short blips, and a slow TLS
+  # handshake or two is not an outage. These rules look at a window of probes,
+  # not the last one (probes every 30s, so 5 minutes is 10 probes).
+  - orgId: 1
+    name: external-probes
+    folder: 1Stream Alerts
+    interval: 1m
+    rules:
+      - uid: external-site-down
+        title: ExternalSiteDown
+        condition: C
+        for: 1m
+        noDataState: OK
+        execErrState: Error
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.site }} is down"
+          description: "Every probe to {{ $labels.instance }} from Azure has failed for over 5 minutes."
+          value: "all probes failing 5m"
+        data:
+          - refId: A
+            datasourceUid: prometheus-ds
+            relativeTimeRange: {from: 600, to: 0}
+            model: {refId: A, instant: true, expr: 'max_over_time(probe_success{job=~"blackbox-ext-.*"}[5m])'}
+          - *reduceB
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: lt, params: [1]}}]}
+
+      - uid: external-site-degraded
+        title: ExternalSiteDegraded
+        condition: C
+        for: 0s
+        noDataState: OK
+        execErrState: Error
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.site }} is failing intermittently"
+          description: "Over half the probes to {{ $labels.instance }} from Azure failed in the last 15 minutes, but not all of them for 5 minutes straight. Usually the site itself (slow TLS, overload) or the link. Email only."
+          value: "{{ humanizePercentage $values.B.Value }} of probes OK"
+        data:
+          - refId: A
+            datasourceUid: prometheus-ds
+            relativeTimeRange: {from: 1200, to: 0}
+            model: {refId: A, instant: true, expr: 'avg_over_time(probe_success{job=~"blackbox-ext-.*"}[15m])'}
+          - *reduceB
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: lt, params: [0.5]}}]}
+
+      - uid: external-slow-response
+        title: ExternalSlowResponse
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.site }} is slow"
+          description: "The median successful probe to {{ $labels.instance }} from Azure has taken over 5 seconds across 10 minutes, for 5 minutes."
+          value: "median {{ printf \"%.1f\" $values.B.Value }}s"
+        data:
+          - refId: A
+            datasourceUid: prometheus-ds
+            relativeTimeRange: {from: 900, to: 0}
+            model: {refId: A, instant: true, expr: 'quantile_over_time(0.5, (probe_duration_seconds{job=~"blackbox-ext-.*"} and probe_success == 1)[10m:30s])'}
+          - *reduceB
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: B, conditions: [{evaluator: {type: gt, params: [5]}}]}

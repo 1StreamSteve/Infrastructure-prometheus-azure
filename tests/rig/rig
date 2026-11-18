@@ -6,6 +6,7 @@
 #   rig exp <ip:port> reset          back to healthy defaults
 #   rig site <name> <mode> [arg]     ok | slow <s> | error <code> | hang <s> | reset | tlshang <s>
 #   rig reset                        every fake back to healthy
+#   rig cert <host> <days>           reissue uc/scripts certificate with that lifetime
 #   rig q '<promql>'                 instant query, one line per series
 #   rig alerts                       Grafana alert instances and their labels
 #   rig mail [n]                     last n emails: time, recipients, subject
@@ -47,6 +48,16 @@ case $cmd in
     rm -f "$f"; setjson "$f" mode="\"$mode\"" arg="$arg" ;;
   reset)
     rm -f $STATE/*.json; echo "all fakes healthy" ;;
+  cert)
+    # rig cert <host> <days>: reissue a fake site's certificate from the rig CA
+    host=$1 days=$2 C=/etc/rig/certs
+    openssl req -new -newkey rsa:2048 -nodes -subj "/CN=$host" -addext "subjectAltName=DNS:$host" \
+        -keyout "$C/$host.key" -out "$C/$host.csr" 2>/dev/null
+    openssl x509 -req -in "$C/$host.csr" -CA $C/rig-ca.crt -CAkey $C/rig-ca.key -CAcreateserial \
+        -days "$days" -copy_extensions copy -out "$C/$host.crt" 2>/dev/null
+    rm -f "$C/$host.csr"
+    systemctl restart rig-fakes
+    echo "$host: $(openssl x509 -in "$C/$host.crt" -noout -enddate)" ;;
   q)
     python3 - "$1" <<'PY'
 import json, sys, urllib.parse, urllib.request

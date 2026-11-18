@@ -11,9 +11,9 @@ Before writing anything it proves the new layout is the same as the old:
 the customer files it would write plus the repo's infrastructure.yml and
 external.yml must hold exactly the old targets with exactly the old labels,
 and every old job's interval, timeout, path and module must equal the new
-scrape pool's. The one deliberate difference is the postgres_exporter `vm`
-label, which takes the node_exporter's vm for the same VM (agreed 18 Nov 2026).
-Any other difference stops it.
+scrape pool's. Two differences are deliberate (agreed 18 Nov 2026): the
+postgres_exporter `vm` label takes the node_exporter's vm for the same VM, and
+external probes go from every 60s to every 30s. Any other difference stops it.
 
 Dry run by default: prints what it would write. --write writes the files.
 It never overwrites an existing customer file unless --force.
@@ -38,7 +38,7 @@ POOLS = {
     'nginx':             {'interval': None, 'timeout': None, 'path': None,     'module': None},
     'postgres':          {'interval': None, 'timeout': None, 'path': None,     'module': None},
     'blackbox-customer': {'interval': '30s', 'timeout': '15s', 'path': '/probe', 'module': 'http_2xx_lenient'},
-    'blackbox-external': {'interval': '60s', 'timeout': '15s', 'path': '/probe', 'module': 'http_2xx'},
+    'blackbox-external': {'interval': '30s', 'timeout': '15s', 'path': '/probe', 'module': 'http_2xx'},
 }
 
 
@@ -115,6 +115,7 @@ def main():
     print(f'old config: {len(old)} targets in {len({o[0] for o in old})} jobs')
 
     problems = []
+    setting_changes = []
 
     # 1. Every old job's scrape settings must equal its new pool's.
     for job, t, lab, st in old:
@@ -122,7 +123,11 @@ def main():
         if pool is None:
             problems.append(f'{job}: no scrape pool takes this job prefix')
             continue
-        if st != POOLS[pool]:
+        want = dict(POOLS[pool])
+        if pool == 'blackbox-external' and st['interval'] == '60s':
+            setting_changes.append(f'{job}: scrape interval 60s -> {want["interval"]}')
+            want['interval'] = '60s'
+        if st != want:
             problems.append(f'{job}: settings {st} differ from pool {pool} {POOLS[pool]}')
 
     # 2. Split: infrastructure and external come from git, customers are written.
@@ -175,15 +180,17 @@ def main():
             problems.append(f'new layout has a target the old did not: {k}')
 
     print(f'customers: {", ".join(f"{c} ({len(g)})" for c, g in sorted(customers.items()))}')
-    print(f'deliberate changes ({len(changes)}):')
+    print(f'deliberate changes ({len(changes) + len(setting_changes)}):')
     for _, msg in changes:
+        print(f'  {msg}')
+    for msg in setting_changes:
         print(f'  {msg}')
     if problems:
         print('STOPPED, the new layout would not match the old:')
         for p in problems:
             print(f'  - {p}')
         return 1
-    print('equivalence: OK (old targets == git files + customer files, bar the vm changes)')
+    print('equivalence: OK (old targets == git files + customer files, bar the deliberate changes)')
 
     # 5. Write (or show).
     if a.write:

@@ -33,12 +33,15 @@ bash "$REPO/tests/rig/provision.sh" > "$OUT/provision0.txt" 2>&1 || { tail "$OUT
 rm -f $CUST/*.yml
 bash "$REPO/tests/rig/rig-deploy.sh" --ref $BASELINE > "$OUT/deploy-baseline.txt" 2>&1 || { tail "$OUT/deploy-baseline.txt"; exit 2; }
 grep -q 'static_configs' /etc/prometheus/prometheus.yml && ok "baseline config deployed" || { bad "baseline not deployed"; exit 2; }
-# Let the restart's leftovers go stale (5 min lookback) so "before" is clean.
-wait_for 400 "baseline: 19 targets up, and only 19 up series" \
-    "[[ \$(rig q 'up == 1' | wc -l) == 19 ]]"
+# Both conditions: the targets API shows 19 discovered and up (series alone
+# can be the previous run's, still inside the 5 minute lookback), and the
+# restart's leftovers have gone stale so only 19 up series remain.
+wait_for 420 "baseline: 19 targets discovered and up, and only 19 up series" \
+    "python3 $REPO/tools/targets-snapshot.py save $OUT/before.json | grep -q ': 19 targets, 0 not up' && [[ \$(rig q 'up == 1' | wc -l) == 19 ]]"
 
 echo "== 1. before"
 python3 "$REPO/tools/targets-snapshot.py" save "$OUT/before.json"
+grep -c '"health": "up"' "$OUT/before.json" | grep -qx 19 && ok "before snapshot holds 19 up targets" || { bad "before snapshot is not 19 up targets"; exit 1; }
 
 echo "== 2. migration"
 python3 "$REPO/tools/one-off/2026-11-split-customers.py" > "$OUT/dry-run.txt"; rc=$?
@@ -46,6 +49,8 @@ python3 "$REPO/tools/one-off/2026-11-split-customers.py" > "$OUT/dry-run.txt"; r
 grep -q 'equivalence: OK' "$OUT/dry-run.txt" && ok "dry run proves equivalence" || bad "no equivalence line"
 n=$(grep -c ' vm .* -> ' "$OUT/dry-run.txt" || true)
 [[ "$n" == 3 ]] && ok "exactly 3 deliberate vm changes" || bad "$n vm changes, expected 3"
+n=$(grep -c 'scrape interval 60s -> 30s' "$OUT/dry-run.txt" || true)
+[[ "$n" == 2 ]] && ok "external probes 60s -> 30s listed as deliberate" || bad "$n interval changes, expected 2"
 [[ -z "$(ls -A $CUST 2>/dev/null)" ]] && ok "dry run wrote nothing" || bad "dry run left files in $CUST"
 sed -n '/deliberate changes/,/equivalence/p' "$OUT/dry-run.txt"
 python3 "$REPO/tools/one-off/2026-11-split-customers.py" --write > "$OUT/write.txt"; rc=$?
@@ -58,8 +63,10 @@ promtool check config /etc/prometheus/prometheus.yml > "$OUT/promtool.txt" 2>&1 
 wait_for 90 "all targets scraped once on the new config" \
     "python3 $REPO/tools/targets-snapshot.py save $OUT/after.json | grep -q ', 0 not up' && [[ \$(grep -c '\"health\": \"up\"' $OUT/after.json) -ge 19 ]]"
 python3 "$REPO/tools/targets-snapshot.py" diff "$OUT/before.json" "$OUT/after.json" | tee "$OUT/diff.txt"
-labels=$(grep -c '^LABELS' "$OUT/diff.txt" || true); other=$(grep -cvE '^LABELS|before, .* after' "$OUT/diff.txt" || true)
-[[ "$labels" == 3 && "$other" == 0 ]] && ok "only the 3 postgres vm labels changed" || bad "diff: $labels label changes, $other other"
+labels=$(grep -c '^LABELS' "$OUT/diff.txt" || true)
+intervals=$(grep -cE '^INTERVAL +blackbox-ext-.* (1m|1m0s|60s) -> 30s' "$OUT/diff.txt" || true)
+other=$(grep -cvE '^LABELS|^INTERVAL +blackbox-ext-.* (1m|1m0s|60s) -> 30s|before, .* after' "$OUT/diff.txt" || true)
+[[ "$labels" == 3 && "$intervals" == 2 && "$other" == 0 ]] && ok "only the 3 postgres vm labels and the 2 external intervals changed"     || bad "diff: $labels label changes, $intervals interval changes, $other other"
 [[ $(grep '^LABELS' "$OUT/diff.txt" | grep -vc "'vm'") == 0 ]] && ok "the label changes are vm only" || bad "a non-vm label changed"
 # Instances, not series: the rig restarts Prometheus, and a restart (unlike
 # sync.sh's reload) leaves the old postgres vm series visible for 5 minutes.

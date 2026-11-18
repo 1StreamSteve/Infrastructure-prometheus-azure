@@ -85,9 +85,11 @@ scrape_configs:
       - target_label: __address__
         replacement: 127.0.0.1:9115
 
-  # External HTTPS sites, probed from Azure through blackbox_exporter
+  # External HTTPS sites, probed from Azure through blackbox_exporter.
+  # Every 30s, so the external rules' 5 and 15 minute windows hold 10 and 30
+  # probes (was 60s until Nov 2026).
   - job_name: 'blackbox-external'
-    scrape_interval: 60s
+    scrape_interval: 30s
     scrape_timeout:  15s
     metrics_path: /probe
     params:

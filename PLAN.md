@@ -142,7 +142,16 @@ Each step is committed and tested before the next. The repo is personal, so step
    - target labels identical before and after the migration, apart from the postgres `vm` label
    - a new file is picked up without a reload, and a deleted file drops its targets
    - a broken file is caught by the checker, and Prometheus keeps running
-5. **Alert rules and templates (issues 1 and 3).** Rules, templates, contact points and policies. Tests on the rig:
+5. **Alert rules and templates (issues 1 and 3).** *Done 18 Nov 2026. `tests/step5-alerts.sh`: 27 PASS on the rig.*
+   - *The first run gave 25 PASS. Its 2 FAILs were the test's recipient pattern (the SMS receiver lists three numbers); the fixed check passed against the captured mail, with a negative control.*
+   - *Eight faults broke at once, and each got its own email and SMS naming the customer or site, VM or URL, and reading, e.g. `[FIRING:1] WARNING HighCPU | citiq-v2 | cx-app-vm-005 | 95%`.*
+   - *Flapping uc raised only ExternalSiteDegraded (email only), never ExternalSiteDown. scripts, with every probe failing, raised ExternalSiteDown.*
+   - *No SlowResponse fired from failed probes. No `[no value]` and no "1Stream Alerts" anywhere.*
+   - *Every alert resolved with a `[RESOLVED]` email and SMS.*
+   - *Also changed: SlowResponse and ExternalSlowResponse count successful probes only, and external probes run every 30s.*
+   - *`tests/step4-customer-files.sh` was rerun on the final files: 37 PASS, 0 FAIL, with exactly 5 deliberate differences (3 postgres vm labels, 2 external intervals).*
+
+   Rules, templates, contact points and policies. Tests on the rig:
    - one alert per failing target, with the right labels
    - the subjects and bodies captured by the SMTP sink match the examples above
    - external down, degraded and slow behave as designed with the test target switched
@@ -151,9 +160,23 @@ Each step is committed and tested before the next. The repo is personal, so step
 7. **Runbook** for the change window, with rollback. Steve reviews it.
 8. **Change window (Steve).**
    1. Pre-change restore point (`Invoke-PreChangeBackup.ps1` from the nginx repo).
-   2. Deploy key, clone.
-   3. Run the migration, then `sync.sh`, then `verify.sh`.
-   4. Contact point test, and a real test alert through to SMS.
+   2. **Patch Ubuntu first, on the old config** (added 18 Nov 2026 at Steve's request):
+      1. `apt full-upgrade` and reboot.
+      2. Verify every service comes back by itself and all 19 targets are up, before any config change, so a patching problem can't be confused with a config one.
+      3. Record the kernel before and after. The capture shows `6.17.0-1013-azure` (built 15 Apr 2026), 174 days up, and no newer kernel installed despite `unattended-upgrades`.
+      4. **CVE-2026-98432** (IPv4 TCP request-socket use-after-free, remote code execution, Ubuntu priority Critical, CVSS 9.8). From Ubuntu's tracker on 18 Nov 2026, for noble:
+
+         | Kernel package | Status |
+         |---|---|
+         | `linux-azure` 6.8 GA | Fixed in 6.8.0-1073.82 |
+         | `linux-azure-6.17` (this VM's line) | End of life, never fixed |
+         | `linux-azure-7.0` (the next HWE) | Vulnerable, fix in progress |
+
+         The VM's `linux-azure` metapackage rolls onto HWE, so a plain `full-upgrade` lands on a vulnerable 7.0 kernel. The runbook either moves the VM to the 6.8 GA Azure kernel (≥ 6.8.0-1073.82) or patches again once the 7.0 fix is released. Steve to choose. Confirm the exact package names on the VM with `apt-cache policy` before the runbook names them. Verify with `uname -r` after the reboot, and say plainly whether the VM has the fix.
+      5. Outside this change: the nginx pair (internet-facing) ran `6.14.0-1017-azure` on 17 Nov, also end of life and vulnerable. That belongs in the nginx repo as its own urgent change.
+   3. Deploy key, clone.
+   4. Run the migration, then `sync.sh`, then `verify.sh`.
+   5. Contact point test, and a real test alert through to SMS.
 9. **Close-out.** Mode 6 KB guides: updating the monitoring VM, adding and removing a customer. Then move the repo to the org.
 
 ## Follow-ups, not in this change

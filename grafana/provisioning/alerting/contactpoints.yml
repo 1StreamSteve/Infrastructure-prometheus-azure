@@ -1,32 +1,50 @@
 # /etc/grafana/provisioning/alerting/contactpoints.yml
-# Email + SMS contact point via Microsoft 365 SMTP.
+# Contact points. Managed in git: sync.sh overwrites it.
 #
-# Placeholders to replace:
-#   <ALERT-TO-EMAIL>     -- where email alerts go  e.g. steve@1stream.co.za
+# email-oncall  infra@ by email, plus SMS through Grapevine's email-to-SMS
+#               gateway. The default for every alert (policies.yml).
+# email-only    infra@ by email only. Used for alerts that should not wake
+#               anyone: ExternalSiteDegraded.
 #
-# SMS via Grapevine email-to-SMS gateway (vine.co.za)
-#   Subject mode: <number>@sms5.vine.co.za (alert summary goes in subject line)
-#   Add one address per engineer's cell number, comma-separated.
+# SMS: <number>@sms5.vine.co.za sends the email's subject as the SMS, so the
+# subject template (templates.yml, 1stream.subject) is what people read on
+# their phones. To add or remove an SMS recipient, edit the addresses below
+# (semicolon separated), commit, and sync.
 #
-# To add/remove SMS recipients, edit the sms-oncall addresses list below.
+# Mail goes out through the SMTP settings in grafana.ini (M365), which are
+# server-only because they hold the password.
 
 apiVersion: 1
 
 contactPoints:
   - orgId: 1
-    name:  email-oncall
+    name: email-oncall
     receivers:
-      - uid:  email-oncall-uid
+      - uid: email-oncall-uid
         type: email
         settings:
-          addresses:          "infra@1stream.co.za"
-          singleEmail:        false
-          message:            |
-            {{ template "default.message" . }}
+          addresses: "infra@1stream.co.za"
+          singleEmail: false
+          subject: '{{ template "1stream.subject" . }}'
+          message: '{{ template "1stream.message" . }}'
         disableResolveMessage: false
-      - uid:  sms-oncall-uid
+      - uid: sms-oncall-uid
         type: email
         settings:
-          addresses:          "0726050094@sms5.vine.co.za;0797330626@sms5.vine.co.za;0794276362@sms5.vine.co.za"
-          singleEmail:        true
+          addresses: "0726050094@sms5.vine.co.za;0797330626@sms5.vine.co.za;0794276362@sms5.vine.co.za"
+          singleEmail: true
+          subject: '{{ template "1stream.subject" . }}'
+          message: '{{ template "1stream.message" . }}'
+        disableResolveMessage: false
+
+  - orgId: 1
+    name: email-only
+    receivers:
+      - uid: email-only-uid
+        type: email
+        settings:
+          addresses: "infra@1stream.co.za"
+          singleEmail: false
+          subject: '{{ template "1stream.subject" . }}'
+          message: '{{ template "1stream.message" . }}'
         disableResolveMessage: false

@@ -1,0 +1,65 @@
+# /etc/grafana/provisioning/alerting/templates.yml
+# Notification templates. Managed in git: sync.sh overwrites it.
+#
+# 1stream.subject is the email subject, and the whole SMS: Grapevine's
+# sms5.vine.co.za gateway sends only the subject line. It names what tripped:
+#   [FIRING:1] CRITICAL SiteDown | citiq-v2 | http://10.5.0.4:8069 | probe failing
+#   [FIRING:1] WARNING HighCPU | citiq-v2 | cx-app-vm-005 | 92%
+#   [RESOLVED] CRITICAL ExternalSiteDown | uc-voice-platform | https://uc.1stream.co.za
+# Who: the external site, or else the customer. Where: the VM, or for a probe
+# the URL. Then the rule's `value` annotation. A notification carrying more
+# than one alert ends "(+ more, N alerts)".
+#
+# 1stream.message is the email body: every alert in the notification with its
+# summary, description, labels that matter, times (server local time, SAST
+# on the VM) and links.
+
+apiVersion: 1
+
+templates:
+  - orgId: 1
+    name: 1stream
+    template: |
+      {{ define "1stream.who" -}}
+      {{ if .Labels.site }}{{ .Labels.site }}{{ else if .Labels.customer }}{{ .Labels.customer }}{{ else }}unknown{{ end -}}
+      {{ if .Labels.vm }} | {{ .Labels.vm }}{{ else if .Labels.instance }} | {{ .Labels.instance }}{{ end -}}
+      {{- end }}
+
+      {{ define "1stream.line" -}}
+      {{ .Labels.severity | toUpper }} {{ .Labels.alertname }} | {{ template "1stream.who" . }}
+      {{- if and (eq .Status "firing") .Annotations.value }} | {{ .Annotations.value }}{{ end -}}
+      {{- end }}
+
+      {{ define "1stream.subject" -}}
+      [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}]
+      {{- if .Alerts.Firing }}{{ with index .Alerts.Firing 0 }} {{ template "1stream.line" . }}{{ end }}
+      {{- else }}{{ with index .Alerts.Resolved 0 }} {{ template "1stream.line" . }}{{ end }}{{ end }}
+      {{- if gt (len .Alerts) 1 }} (+ more, {{ len .Alerts }} alerts){{ end -}}
+      {{- end }}
+
+      {{ define "1stream.alert" -}}
+      {{ .Labels.severity | toUpper }} {{ .Labels.alertname }}: {{ .Annotations.summary }}
+      {{ .Annotations.description }}
+      {{ if .Labels.site }}Site:      {{ .Labels.site }}
+      {{ end }}{{ if .Labels.customer }}Customer:  {{ .Labels.customer }}
+      {{ end }}{{ if .Labels.vm }}VM:        {{ .Labels.vm }}
+      {{ end }}{{ if .Labels.instance }}Target:    {{ .Labels.instance }}
+      {{ end }}{{ if .Labels.datname }}Database:  {{ .Labels.datname }}
+      {{ end }}{{ if .Annotations.value }}Reading:   {{ .Annotations.value }}
+      {{ end }}Started:   {{ .StartsAt.Local.Format "2006-01-02 15:04:05 MST" }}
+      {{ if eq .Status "resolved" }}Resolved:  {{ .EndsAt.Local.Format "2006-01-02 15:04:05 MST" }}
+      {{ end }}Rule:      {{ .GeneratorURL }}
+      {{ if .SilenceURL }}Silence:   {{ .SilenceURL }}
+      {{ end }}
+      {{- end }}
+
+      {{ define "1stream.message" -}}
+      {{ if .Alerts.Firing }}FIRING ({{ len .Alerts.Firing }})
+
+      {{ range .Alerts.Firing }}{{ template "1stream.alert" . }}
+      {{ end }}{{ end }}
+      {{- if .Alerts.Resolved }}RESOLVED ({{ len .Alerts.Resolved }})
+
+      {{ range .Alerts.Resolved }}{{ template "1stream.alert" . }}
+      {{ end }}{{ end }}
+      {{- end }}
