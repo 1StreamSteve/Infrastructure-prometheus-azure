@@ -1,0 +1,265 @@
+# /etc/prometheus/prometheus.yml
+# 1Stream Monitoring VM — Prometheus scrape config
+#
+# To add a new customer, copy the "customer template" block at the bottom
+# and replace <CUSTOMER> and <CUSTOMER-*-IP> with the real values.
+
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: 'production'
+    project:     '1scx'
+
+rule_files: []
+
+scrape_configs:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # INFRASTRUCTURE — Monitoring VM + nginx load balancers
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Monitoring VM itself ─────────────────────────────────────────────────
+  - job_name: 'node-monitoring'
+    static_configs:
+      - targets: ['localhost:9100']
+        labels:
+          vm:       'monitoring-001'
+          role:     'monitoring'
+          customer: 'infrastructure'
+
+  # ── VM1 — nginx exporter ─────────────────────────────────────────────────
+  - job_name: 'nginx-vm1'
+    static_configs:
+      - targets: ['10.0.0.4:9113']
+        labels:
+          vm:       'nginx-001'
+          role:     'nginx'
+          customer: 'infrastructure'
+
+  # ── VM1 — node exporter ──────────────────────────────────────────────────
+  - job_name: 'node-nginx-vm1'
+    static_configs:
+      - targets: ['10.0.0.4:9100']
+        labels:
+          vm:       'nginx-001'
+          role:     'nginx'
+          customer: 'infrastructure'
+
+  # ── VM2 — nginx exporter ─────────────────────────────────────────────────
+  - job_name: 'nginx-vm2'
+    static_configs:
+      - targets: ['10.0.0.5:9113']
+        labels:
+          vm:       'nginx-002'
+          role:     'nginx'
+          customer: 'infrastructure'
+
+  # ── VM2 — node exporter ──────────────────────────────────────────────────
+  - job_name: 'node-nginx-vm2'
+    static_configs:
+      - targets: ['10.0.0.5:9100']
+        labels:
+          vm:       'nginx-002'
+          role:     'nginx'
+          customer: 'infrastructure'
+
+  # ============================================================================
+  #
+  # External Sites to Monitor
+  #
+  # ===========================================================================
+
+  - job_name: 'blackbox-ext-uc-voice-platform'
+    scrape_interval: 60s
+    scrape_timeout: 15s
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: ['https://uc.1stream.co.za']
+        labels:
+          category: 'external'
+          site: 'uc-voice-platform'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+
+  - job_name: 'blackbox-ext-scripts-v1-platform'
+    scrape_interval: 60s
+    scrape_timeout: 15s
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: ['https://scripts.1stream.co.za']
+        labels:
+          category: 'external'
+          site: 'scripts-v1-platform'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+
+  # ==========================================================================
+  # CUSTOMER: stagezero-v2
+  # ==========================================================================
+
+  # ── customer-tenant Odoo VM — node exporter--------------------------------
+  - job_name: 'node-stagezero-v2-odoo'
+    static_configs:
+      - targets: ['10.1.0.4:9100']
+        labels:
+          vm:       'cx-app-vm-001'
+          role:     'odoo'
+          customer: 'stagezero-v2'
+
+  # ── customer-tenant Postgres VM — node exporter ──────────────────────────
+  - job_name: 'node-stagezero-v2-pg'
+    static_configs:
+      - targets: ['10.1.0.5:9100']
+        labels:
+          vm:       'cx-db-vm-001'
+          role:     'postgres'
+          customer: 'stagezero-v2'
+
+  # ── customer-tenant Postgres VM — postgres exporter ──────────────────────
+  - job_name: 'postgres-stagezero-v2-pg'
+    static_configs:
+      - targets: ['10.1.0.5:9187']
+        labels:
+          vm:       'stagezero-v2-pg'
+          role:     'postgres'
+          customer: 'stagezero-v2'
+
+  # ── Blackbox HTTP probes ──────────────────────────────────────────
+  - job_name: 'blackbox-stagezero-v2'
+    metrics_path: /probe
+    params:
+      module: [http_2xx_lenient]
+    scrape_interval: 30s
+    scrape_timeout: 15s
+    static_configs:
+      - targets:
+          - http://10.1.0.4:8069
+        labels:
+          customer: 'stagezero-v2'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+ # ========================================================================== 
+ # CUSTOMER: om-pfdirect-v2
+ # ===========================================================================
+  - job_name: 'node-om-pfdirect-v2-odoo'
+    static_configs:
+      - targets: ['10.2.0.4:9100']
+        labels:
+          vm:       'cx-app-vm-002'
+          role:     'odoo'
+          customer: 'om-pfdirect-v2'
+
+ # ── om-pfdirect-v2 Postgres VM — node exporter ──────────────────────────
+  - job_name: 'node-om-pfdirect-v2-pg'
+    static_configs:
+       - targets: ['10.2.0.5:9100']
+         labels:
+           vm:       'cx-db-vm-002'
+           role:     'postgres'
+           customer: 'om-pfdirect-v2'
+
+ # ── om-pfdirect-v2 Postgres VM — postgres exporter ──────────────────────
+  - job_name: 'postgres-om-pfdirect-v2-pg'
+    static_configs:
+      - targets: ['10.2.0.5:9187']
+        labels:
+           vm:         'om-pfdirect-v2-pg'
+           role:       'postgres'
+           customer:   'om-pfdirect-v2'
+
+  # ── Blackbox HTTP probes ──────────────────────────────────────────
+  - job_name: 'blackbox-om-pfdirect-v2'
+    metrics_path: /probe
+    params:
+      module: [http_2xx_lenient]
+    scrape_interval: 30s
+    scrape_timeout: 15s
+    static_configs:
+      - targets:
+          - http://10.2.0.4:8069
+        labels:
+          customer: 'om-pfdirect-v2'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+ # ==========================================================================
+ # CUSTOMER: citiq-v2
+ # ===========================================================================
+
+  - job_name: 'node-citiq-v2-odoo'
+    static_configs:
+      - targets: ['10.5.0.4:9100']
+        labels:
+          vm:             'cx-app-vm-005'
+          role:           'odoo'
+          customer:       'citiq-v2'
+
+ # ── citiq-v2 Postgres VM — node exporter ──────────────────────────
+
+  - job_name: 'node-citiq-v2-pg'
+    static_configs:
+    - targets: ['10.5.0.5:9100']
+      labels:
+        vm:               'cx-db-vm-005'
+        role:             'postgres'
+        customer:         'citiq-v2'
+
+ # ── citiq-v2 Postgres VM — postgres exporter ─────────────────────
+
+  - job_name: 'postgres-citiq-v2-pg'
+    static_configs:
+      - targets: ['10.5.0.5:9187']
+        labels:
+          vm:         'citiq-v2-pg'
+          role:       'postgres'
+          customer:   'citiq-v2'
+
+ # ── Blackbox HTTP probes ──────────────────────────────────────────
+
+  - job_name: 'blackbox-citiq-v2'
+    metrics_path: /probe
+    params:
+      module: [http_2xx_lenient]
+    scrape_interval: 30s
+    scrape_timeout: 15s
+    static_configs:
+      - targets:
+          - http://10.5.0.4:8069
+        labels:
+          customer: 'citiq-v2'
+    relabel_configs:
+      - source_labels:  [__address__]
+        target_label:   __param_target
+      - source_labels:  [__param_target]
+        target_label:   instance
+      - target_label:   __address__
+        replacement:   127.0.0.1:9115
+

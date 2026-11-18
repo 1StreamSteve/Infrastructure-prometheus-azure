@@ -121,8 +121,8 @@ source-material/monitoring/            the original June build, for reference
 
 Each step is committed and tested before the next. The repo is personal, so steps push straight to `main` until it moves to the org.
 
-1. **Scaffold.** `.gitignore` (captures, test binaries), README, this plan, the original build in `source-material/monitoring`, and the capture tools. Push.
-2. **Baseline.** Put the live system files into the repo layout exactly as running: `prometheus.yml`, provisioning, `blackbox.yml`, the vhost and the units. Test: byte-compare against the capture. That makes every later change a readable diff against what runs today.
+1. **Scaffold.** *Done 18 Nov 2026.* `.gitignore` (captures, test binaries), README, this plan, the original build in `source-material/monitoring`, and the capture tools. Push.
+2. **Baseline.** *Done 18 Nov 2026: 10 files plus `sync-manifest.conf` (server path, owner and mode as live). `tests/compare-capture.sh` matched all 10 byte for byte against the capture.* Put the live system files into the repo layout exactly as running: `prometheus.yml`, provisioning, `blackbox.yml`, the vhost and the units. Test: byte-compare against the capture. That makes every later change a readable diff against what runs today.
 3. **Test rig.** A WSL Ubuntu 24.04 distro, `monitoring-synctest`, with the same binaries and Grafana .deb as the VM. It has:
    - a local blackbox target that can be switched between up, slow and down
    - fake node targets
@@ -151,7 +151,9 @@ Each step is committed and tested before the next. The repo is personal, so step
 
 - Bring 1streamcx, flash, amathuba and CX-QA under monitoring: exporters on their VMs, then one customer file each.
 - What runs on the scripts server around 23:00 that stalls TLS handshakes.
-- Why uc's Let's Encrypt certificate got down to 12 days before renewing.
 - The 5s DNS retries on the monitoring VM.
+- The dashboards. Grafana 13 keeps them in its unified storage, so the capture didn't get them. Export the live ones through the API and keep them in `grafana/dashboards/`.
 - HighSystemLoad uses a fixed 4.0 rather than a per-VM CPU count.
 - Prometheus and blackbox_exporter are upstream tarballs, not apt packages.
+
+Resolved since the investigation: uc's Let's Encrypt renewal now runs outside the SSL alert window (Steve, 18 Nov 2026).

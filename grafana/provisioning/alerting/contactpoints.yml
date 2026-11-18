@@ -1,0 +1,32 @@
+# /etc/grafana/provisioning/alerting/contactpoints.yml
+# Email + SMS contact point via Microsoft 365 SMTP.
+#
+# Placeholders to replace:
+#   <ALERT-TO-EMAIL>     -- where email alerts go  e.g. steve@1stream.co.za
+#
+# SMS via Grapevine email-to-SMS gateway (vine.co.za)
+#   Subject mode: <number>@sms5.vine.co.za (alert summary goes in subject line)
+#   Add one address per engineer's cell number, comma-separated.
+#
+# To add/remove SMS recipients, edit the sms-oncall addresses list below.
+
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name:  email-oncall
+    receivers:
+      - uid:  email-oncall-uid
+        type: email
+        settings:
+          addresses:          "infra@1stream.co.za"
+          singleEmail:        false
+          message:            |
+            {{ template "default.message" . }}
+        disableResolveMessage: false
+      - uid:  sms-oncall-uid
+        type: email
+        settings:
+          addresses:          "0726050094@sms5.vine.co.za;0797330626@sms5.vine.co.za;0794276362@sms5.vine.co.za"
+          singleEmail:        true
+        disableResolveMessage: false
