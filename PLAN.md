@@ -136,7 +136,7 @@ Each step is committed and tested before the next. The repo is personal, so step
    - *A new customer file was scraped within seconds and a deleted one dropped, with no reload.*
    - *A broken file keeps its last good targets (Prometheus logs "Error reading file") and doesn't affect other customers.*
    - *External probes stay at 60s here. The move to 30s is part of step 5.*
-   - *A Prometheus restart leaves the old postgres series visible for 5 minutes; a reload should mark them stale at once. Step 6 must prove that `sync.sh` reloads.*
+   - *After the change, the old postgres `vm` series stay visible for the 5-minute lookback, then go. Step 6 showed this is true for a reload as well as a restart: Prometheus writes no staleness markers when a whole job is removed. Harmless, since both read up=1; the runbook mentions it.*
 
    New `prometheus.yml`, the infrastructure and external target files, the template, `check-targets.py` and the migration script. Tests on the rig:
    - target labels identical before and after the migration, apart from the postgres `vm` label
@@ -156,7 +156,23 @@ Each step is committed and tested before the next. The repo is personal, so step
    - the subjects and bodies captured by the SMTP sink match the examples above
    - external down, degraded and slow behave as designed with the test target switched
    - the degraded alert reaches email only
-6. **Deployment tooling.** `sync.sh`, `verify.sh`, `remove-customer.sh`, the deploy key and clone scripts. Test on the rig: dry run, apply, a deliberately broken change that rolls itself back, and `--restore`.
+6. **Deployment tooling.** *Done 18 Nov 2026. The change window rehearsed on the rig with `tests/step6-sync.sh`: 46 PASS, 0 FAIL.*
+   - *From the live baseline: clone, dry run, refusal off main, migration, apply, and `verify.sh` 27/27.*
+   - *A broken prometheus.yml and a dangling rule condition were stopped by validation (exit 4). A contact point type only Grafana rejects was rolled back after the restart (exit 5).*
+   - *A dropped target was caught; `--restore` and `--restore-full` worked, the latter back to the 14 June rules and forward again.*
+   - *`remove-customer.sh` passed, and the old postgres series aged out after 281s.*
+   - *Earlier runs found and fixed: the reload check read a metric Prometheus doesn't store; the target-count check raced service discovery; Grafana keeps rules removed from the files; and `--restore-full` refused the June classic rules.*
+   - *`sync.sh` keeps the nginx repo's flags. It reloads Prometheus, blackbox, nginx and fail2ban, and restarts Grafana, which only reads provisioning at start-up.*
+   - *Before anything goes live, it validates with `promtool`, `check-targets.py`, blackbox `--config.check`, the new `tools/check-rules.py`, `nginx -t` and `fail2ban-client -t`.*
+   - *After going live, it checks that Prometheus's reload succeeded (read from its own `/metrics`, since it doesn't scrape itself) and that the target count, once settled, hasn't dropped (`--allow-fewer-targets` when intended).*
+   - *It checks that Grafana's database matches the files: rules, how each is built, contact points and templates. Grafana never removes what has gone from the files, so `sync.sh` writes a one-off delete file for that.*
+   - *`--restore-full` also removes git-managed files the snapshot didn't have.*
+   - *`verify.sh` is read-only: PASS, FAIL or UNDETERMINED.*
+   - *`tools/remove-customer.sh` moves the file aside, waits for the targets to go, and purges after a typed confirmation. It proves the purge by querying samples, because the series list keeps deleted series until the next compaction.*
+   - *Deploy-key and clone scripts as on the nginx VMs.*
+   - *Rig finding for any rebuild: Ubuntu's `prometheus-node-exporter` creates `prometheus` as a system user and fails to install if a non-system `prometheus` user exists. Install the package before creating users, as the June script did.*
+
+   `sync.sh`, `verify.sh`, `remove-customer.sh`, the deploy key and clone scripts. Test on the rig: dry run, apply, a deliberately broken change that rolls itself back, and `--restore`.
 7. **Runbook** for the change window, with rollback. Steve reviews it.
 8. **Change window (Steve).**
    1. Pre-change restore point (`Invoke-PreChangeBackup.ps1` from the nginx repo).

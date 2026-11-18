@@ -59,10 +59,37 @@ EOF
 # -----------------------------------------------------------------------------
 # Packages
 # -----------------------------------------------------------------------------
+# Order matters, as on the VM: the prometheus-node-exporter package creates
+# `prometheus` as a SYSTEM user, and its postinst fails (exit 13) if a
+# non-system `prometheus` user already exists. The June setup script installed
+# the package before its own `useradd`, so the VM is fine. An earlier rig build
+# did it the other way round; move such a user to a free system UID first.
+if id prometheus &>/dev/null && (( $(id -u prometheus) >= 1000 )); then
+    systemctl stop prometheus 2>/dev/null || true
+    sysuid=$(for i in $(seq 999 -1 100); do getent passwd $i >/dev/null || getent group $i >/dev/null || { echo $i; break; }; done)
+    usermod -u "$sysuid" prometheus && groupmod -g "$sysuid" prometheus
+    chown -R prometheus:prometheus /etc/prometheus /data/prometheus
+    log "prometheus user moved to system UID $sysuid"
+fi
+
+# A real node_exporter, as on the VM, but off to one side: the fakes own
+# 127.0.0.1:9100 (the VM's own node target), so this one listens on
+# 127.0.0.9:9101 and is not scraped. Its address is set before the package
+# configures, and apt starts no services on the rig (policy-rc.d): the rig
+# starts what it needs itself, after.
+echo 'ARGS="--web.listen-address=127.0.0.9:9101"' > /etc/default/prometheus-node-exporter
 log "apt packages"
+printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d; chmod 755 /usr/sbin/policy-rc.d
+trap 'rm -f /usr/sbin/policy-rc.d' EXIT
+dpkg --configure -a >/dev/null
 apt-get update -qq
-apt-get install -y -qq curl ca-certificates openssl python3 python3-yaml python3-aiosmtpd \
-    nginx fail2ban ufw jq sqlite3 adduser libfontconfig1 musl iproute2 iptables git >/dev/null
+apt-get install -y -qq -o Dpkg::Options::=--force-confold \
+    curl ca-certificates openssl python3 python3-yaml python3-aiosmtpd \
+    nginx fail2ban ufw jq sqlite3 adduser libfontconfig1 musl iproute2 iptables git \
+    prometheus-node-exporter >/dev/null
+rm -f /usr/sbin/policy-rc.d
+systemctl enable -q prometheus-node-exporter
+systemctl restart prometheus-node-exporter
 
 mkdir -p "$CACHE"
 fetch() { [[ -s "$CACHE/$2" ]] || curl -fsSL "$1" -o "$CACHE/$2"; }

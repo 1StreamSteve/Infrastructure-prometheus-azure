@@ -116,7 +116,11 @@ neg Upper       "- targets: ['10.9.0.4:9100']
   labels: {job: node-Upper-odoo, customer: Upper, vm: cx-app-vm-009, role: odoo}" 'lower case'
 
 echo "== 5. add and remove a customer without a reload"
-reloads0=$(rig q 'prometheus_config_last_reload_success_timestamp_seconds' | awk '{print $2}')
+# From Prometheus's own /metrics: it does not scrape itself, so a PromQL query
+# for this is empty, and two empties would compare equal and pass.
+reload_ts() { curl -fsS http://127.0.0.1:9090/metrics | awk '$1 == "prometheus_config_last_reload_success_timestamp_seconds" {print $2}'; }
+reloads0=$(reload_ts)
+[[ -n "$reloads0" ]] && ok "reload timestamp readable ($reloads0)" || bad "cannot read the reload timestamp"
 sed -e 's/<customer>/rigtest-v2/g' -e 's/<ODOO-VM-IP>/10.9.0.4/g' -e 's/<PG-VM-IP>/10.9.0.5/g' \
     -e 's/<odoo-vm-name>/cx-app-vm-009/g' -e 's/<pg-vm-name>/cx-db-vm-009/g' \
     /etc/prometheus/targets/customer.yml.example > $CUST/rigtest-v2.yml
@@ -137,8 +141,8 @@ python3 "$REPO/tools/check-targets.py" >/dev/null; [[ $? -eq 1 ]] && ok "checker
 
 rm -f $CUST/rigtest-v2.yml
 wait_for 60 "deleted customer's targets dropped" "[[ \$(rig q 'up{customer=\"rigtest-v2\"}' | wc -l) == 0 ]]"
-reloads1=$(rig q 'prometheus_config_last_reload_success_timestamp_seconds' | awk '{print $2}')
-[[ "$reloads0" == "$reloads1" ]] && ok "no config reload was needed for add, break or remove" || bad "a reload happened"
+reloads1=$(reload_ts)
+[[ -n "$reloads1" && "$reloads0" == "$reloads1" ]] && ok "no config reload was needed for add, break or remove" || bad "a reload happened"
 
 echo
 echo "Result: $PASS PASS, $FAIL FAIL"
