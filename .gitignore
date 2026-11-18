@@ -1,0 +1,6 @@
+# Read-only captures of the VM: live data, never committed
+source-material/node-capture-*/
+
+# Test rig downloads and output
+tests/.cache/
+tests/out/

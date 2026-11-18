@@ -1,0 +1,207 @@
+# /etc/prometheus/prometheus.yml
+# 1Stream Monitoring VM — Prometheus scrape config
+#
+# Placeholders to replace before deploying:
+#   <VM1-PRIVATE-IP>            — VM1 (nginx LB) private VNet IP
+#   <VM2-PRIVATE-IP>            — VM2 (nginx LB) private VNet IP
+#   <CUSTOMER-TENANT-ODOO-IP>  — customer-tenant Odoo VM private IP
+#   <CUSTOMER-TENANT-PG-IP>    — customer-tenant Postgres VM private IP
+#   <CUSTOMER-TENANT-ODOO-IP>  — (also used for blackbox probe target, port 8069)
+#
+# To add a new customer, copy the "customer template" block at the bottom
+# and replace <CUSTOMER> and <CUSTOMER-*-IP>/<CUSTOMER-URL> with the real values.
+
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: 'production'
+    project:     '1scx'
+
+rule_files: []
+
+scrape_configs:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # INFRASTRUCTURE — Monitoring VM + nginx load balancers
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Monitoring VM itself ─────────────────────────────────────────────────
+  - job_name: 'node-monitoring'
+    static_configs:
+      - targets: ['localhost:9100']
+        labels:
+          vm:       'monitoring'
+          role:     'monitoring'
+          customer: 'infrastructure'
+
+  # ── VM1 — nginx exporter ─────────────────────────────────────────────────
+  - job_name: 'nginx-vm1'
+    static_configs:
+      - targets: ['<VM1-PRIVATE-IP>:9113']
+        labels:
+          vm:       'vm1'
+          role:     'nginx'
+          customer: 'infrastructure'
+
+  # ── VM1 — node exporter ──────────────────────────────────────────────────
+  - job_name: 'node-vm1'
+    static_configs:
+      - targets: ['<VM1-PRIVATE-IP>:9100']
+        labels:
+          vm:       'vm1'
+          role:     'nginx'
+          customer: 'infrastructure'
+
+  # ── VM2 — nginx exporter ─────────────────────────────────────────────────
+  - job_name: 'nginx-vm2'
+    static_configs:
+      - targets: ['<VM2-PRIVATE-IP>:9113']
+        labels:
+          vm:       'vm2'
+          role:     'nginx'
+          customer: 'infrastructure'
+
+  # ── VM2 — node exporter ──────────────────────────────────────────────────
+  - job_name: 'node-vm2'
+    static_configs:
+      - targets: ['<VM2-PRIVATE-IP>:9100']
+        labels:
+          vm:       'vm2'
+          role:     'nginx'
+          customer: 'infrastructure'
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CUSTOMER: customer-tenant
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── customer-tenant Odoo VM — node exporter ──────────────────────────────
+  - job_name: 'node-customer-tenant-odoo'
+    static_configs:
+      - targets: ['<CUSTOMER-TENANT-ODOO-IP>:9100']
+        labels:
+          vm:       'customer-tenant-odoo'
+          role:     'odoo'
+          customer: 'customer-tenant'
+
+  # ── customer-tenant Postgres VM — node exporter ──────────────────────────
+  - job_name: 'node-customer-tenant-pg'
+    static_configs:
+      - targets: ['<CUSTOMER-TENANT-PG-IP>:9100']
+        labels:
+          vm:       'customer-tenant-pg'
+          role:     'postgres'
+          customer: 'customer-tenant'
+
+  # ── customer-tenant Postgres VM — postgres exporter ──────────────────────
+  - job_name: 'postgres-customer-tenant'
+    static_configs:
+      - targets: ['<CUSTOMER-TENANT-PG-IP>:9187']
+        labels:
+          vm:       'customer-tenant-pg'
+          role:     'postgres'
+          customer: 'customer-tenant'
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # BLACKBOX HTTP PROBES — web response time monitoring
+  # Each customer's Odoo URL is probed every 30s via the blackbox_exporter
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── customer-tenant HTTP probe ───────────────────────────────────────────
+  # Probes internal Odoo IP:8069 (bypasses LB geo-blocking/bot filters)
+  # Uses http_2xx_lenient module (no HTTP version constraint — Odoo returns HTTP/1.0)
+  - job_name: 'blackbox-customer-tenant'
+    scrape_interval: 30s
+    scrape_timeout: 15s
+    metrics_path: /probe
+    params:
+      module: [http_2xx_lenient]
+    static_configs:
+      - targets: ['http://<CUSTOMER-TENANT-ODOO-IP>:8069']
+        labels:
+          customer: 'customer-tenant'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # EXTERNAL HTTP PROBES — third-party services, public URLs, infrastructure
+  # Uses http_2xx module (standard HTTP/1.1+ endpoints)
+  # These are NOT customer Odoo probes — they monitor external dependencies
+  # and your own public-facing infrastructure.
+  #
+  # To add a new external probe, copy the template below and replace:
+  #   <LABEL>  — short lowercase name (e.g. voice-platform, prometheus-ui)
+  #   <URL>    — full URL including https:// (e.g. https://voice.example.com)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # - job_name: 'blackbox-ext-<LABEL>'
+  #   scrape_interval: 60s
+  #   scrape_timeout: 15s
+  #   metrics_path: /probe
+  #   params:
+  #     module: [http_2xx]
+  #   static_configs:
+  #     - targets: ['<URL>']
+  #       labels:
+  #         category: 'external'
+  #         site: '<LABEL>'
+  #   relabel_configs:
+  #     - source_labels: [__address__]
+  #       target_label: __param_target
+  #     - source_labels: [__param_target]
+  #       target_label: instance
+  #     - target_label: __address__
+  #       replacement: 127.0.0.1:9115
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CUSTOMER TEMPLATE — copy this block for each new customer
+  # Replace <CUSTOMER> with the customer name (lowercase, no spaces)
+  # Replace <CUSTOMER-ODOO-IP>, <CUSTOMER-PG-IP>, and <CUSTOMER-URL>
+  # ═══════════════════════════════════════════════════════════════════════════
+  #
+  # - job_name: 'node-<CUSTOMER>-odoo'
+  #   static_configs:
+  #     - targets: ['<CUSTOMER-ODOO-IP>:9100']
+  #       labels:
+  #         vm:       '<CUSTOMER>-odoo'
+  #         role:     'odoo'
+  #         customer: '<CUSTOMER>'
+  #
+  # - job_name: 'node-<CUSTOMER>-pg'
+  #   static_configs:
+  #     - targets: ['<CUSTOMER-PG-IP>:9100']
+  #       labels:
+  #         vm:       '<CUSTOMER>-pg'
+  #         role:     'postgres'
+  #         customer: '<CUSTOMER>'
+  #
+  # - job_name: 'postgres-<CUSTOMER>'
+  #   static_configs:
+  #     - targets: ['<CUSTOMER-PG-IP>:9187']
+  #       labels:
+  #         vm:       '<CUSTOMER>-pg'
+  #         role:     'postgres'
+  #         customer: '<CUSTOMER>'
+  #
+  # - job_name: 'blackbox-<CUSTOMER>'
+  #   scrape_interval: 30s
+  #   scrape_timeout: 15s
+  #   metrics_path: /probe
+  #   params:
+  #     module: [http_2xx_lenient]
+  #   static_configs:
+  #     - targets: ['http://<CUSTOMER-ODOO-IP>:8069']
+  #       labels:
+  #         customer: '<CUSTOMER>'
+  #   relabel_configs:
+  #     - source_labels: [__address__]
+  #       target_label: __param_target
+  #     - source_labels: [__param_target]
+  #       target_label: instance
+  #     - target_label: __address__
+  #       replacement: 127.0.0.1:9115
