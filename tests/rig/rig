@@ -1,0 +1,131 @@
+#!/bin/bash
+# rig: drive the monitoring test rig.
+#
+#   rig status                       services, targets up/down, firing alerts
+#   rig exp <ip:port> k=v ...        set a fake exporter (cpu_busy=95, down=true, max_tx=400 ...)
+#   rig exp <ip:port> reset          back to healthy defaults
+#   rig site <name> <mode> [arg]     ok | slow <s> | error <code> | hang <s> | reset | tlshang <s>
+#   rig reset                        every fake back to healthy
+#   rig q '<promql>'                 instant query, one line per series
+#   rig alerts                       Grafana alert instances and their labels
+#   rig mail [n]                     last n emails: time, recipients, subject
+#   rig mail-show [file]             one email in full (default: the newest)
+#   rig mail-clear                   empty the sink
+#   rig wait <secs>                  sleep with a countdown
+
+set -euo pipefail
+STATE=/var/lib/rig/state
+MAIL=/var/lib/rig/mail
+GF='http://admin:rig@127.0.0.1:3000'
+PROM=http://127.0.0.1:9090
+
+setjson() {   # setjson <file> k=v ...
+    python3 - "$@" <<'PY'
+import json, sys
+path, pairs = sys.argv[1], sys.argv[2:]
+try: s = json.load(open(path))
+except Exception: s = {}
+for p in pairs:
+    k, v = p.split('=', 1)
+    try: v = json.loads(v)
+    except ValueError: pass
+    s[k] = v
+json.dump(s, open(path, 'w'))
+print(path, s)
+PY
+}
+
+cmd=${1:-status}; shift || true
+case $cmd in
+  exp)
+    addr=$1; shift
+    f=$STATE/exp_${addr/:/_}.json
+    if [[ "${1:-}" == reset ]]; then rm -f "$f"; echo "reset $addr"; else setjson "$f" "$@"; fi ;;
+  site)
+    name=$1 mode=$2 arg=${3:-0}
+    f=$STATE/site_$name.json
+    rm -f "$f"; setjson "$f" mode="\"$mode\"" arg="$arg" ;;
+  reset)
+    rm -f $STATE/*.json; echo "all fakes healthy" ;;
+  q)
+    python3 - "$1" <<'PY'
+import json, sys, urllib.parse, urllib.request
+url = 'http://127.0.0.1:9090/api/v1/query?' + urllib.parse.urlencode({'query': sys.argv[1]})
+d = json.load(urllib.request.urlopen(url))
+for r in d['data']['result']:
+    m = r['metric']; n = m.pop('__name__', '')
+    labels = ', '.join(f'{k}="{v}"' for k, v in sorted(m.items()))
+    print(f'{n}{{{labels}}} {r["value"][1]}')
+PY
+    ;;
+  alerts)
+    python3 - <<'PY'
+import base64, json, urllib.request
+req = urllib.request.Request('http://127.0.0.1:3000/api/prometheus/grafana/api/v1/rules',
+                             headers={'Authorization': 'Basic ' + base64.b64encode(b'admin:rig').decode()})
+d = json.load(urllib.request.urlopen(req))
+n = 0
+for g in d['data']['groups']:
+    for r in g['rules']:
+        for a in r.get('alerts', []):
+            if a['state'].lower() == 'normal':
+                continue
+            n += 1
+            lab = {k: v for k, v in a['labels'].items() if k != '__alert_rule_uid__'}
+            print(f"{a['state']:9} {r['name']:24} value={str(a.get('value', ''))[:40]} {lab}")
+print(f'{n} alert instances not Normal')
+PY
+    ;;
+  mail)
+    n=${1:-10}
+    python3 - "$MAIL" "$n" <<'PY'
+import email, email.header, glob, os, sys, time
+files = sorted(glob.glob(os.path.join(sys.argv[1], '*.eml')))[-int(sys.argv[2]):]
+for f in files:
+    m = email.message_from_bytes(open(f, 'rb').read())
+    subj = str(email.header.make_header(email.header.decode_header(m['Subject'] or '')))
+    t = time.strftime('%H:%M:%S', time.localtime(float(os.path.basename(f).split('-')[0])))
+    print(f"{t}  to={m['X-Rig-Rcpt']}\n          {subj}")
+print(f"{len(glob.glob(os.path.join(sys.argv[1], '*.eml')))} emails in sink")
+PY
+    ;;
+  mail-show)
+    f=${1:-$(ls -1 $MAIL/*.eml 2>/dev/null | tail -1)}
+    [[ -n "$f" ]] || { echo "no mail"; exit 0; }
+    python3 - "$f" <<'PY'
+import email, email.header, sys, re, html
+m = email.message_from_bytes(open(sys.argv[1], 'rb').read())
+print('Subject:', str(email.header.make_header(email.header.decode_header(m['Subject'] or ''))))
+print('To:', m['X-Rig-Rcpt'])
+for part in m.walk():
+    if part.get_content_type() == 'text/plain':
+        print(part.get_payload(decode=True).decode('utf-8', 'replace')); break
+else:
+    for part in m.walk():
+        if part.get_content_type() == 'text/html':
+            t = part.get_payload(decode=True).decode('utf-8', 'replace')
+            t = re.sub(r'(?is)<(style|script|head).*?</\1>', '', t)
+            t = re.sub(r'(?i)<br\s*/?>|</(p|div|tr|li|h\d)>', '\n', t)
+            t = html.unescape(re.sub(r'<[^>]+>', '', t))
+            print(re.sub(r'\n\s*\n+', '\n', t).strip()); break
+PY
+    ;;
+  mail-clear)
+    rm -f $MAIL/*.eml; echo "sink emptied" ;;
+  wait)
+    s=$1; while (( s > 0 )); do printf '\r%4ss ' "$s"; sleep 10; s=$((s-10)); done; echo ;;
+  status)
+    for u in rig-fakes rig-smtp prometheus blackbox_exporter grafana-server nginx fail2ban; do
+        printf '%-18s %s\n' "$u" "$(systemctl is-active $u)"; done
+    python3 - <<'PY'
+import json, urllib.request
+t = json.load(urllib.request.urlopen('http://127.0.0.1:9090/api/v1/targets'))['data']['activeTargets']
+bad = [f"{x['labels']['job']} {x['scrapeUrl']} {x['lastError']}" for x in t if x['health'] != 'up']
+for b in bad:
+    print('  DOWN', b)
+print(f'targets: {len(t)} active, {len(t) - len(bad)} up, {len(bad)} not up')
+PY
+    ;;
+  *)
+    sed -n '2,16p' "$0"; exit 1 ;;
+esac

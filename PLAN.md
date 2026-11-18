@@ -123,7 +123,7 @@ Each step is committed and tested before the next. The repo is personal, so step
 
 1. **Scaffold.** *Done 18 Nov 2026.* `.gitignore` (captures, test binaries), README, this plan, the original build in `source-material/monitoring`, and the capture tools. Push.
 2. **Baseline.** *Done 18 Nov 2026: 10 files plus `sync-manifest.conf` (server path, owner and mode as live). `tests/compare-capture.sh` matched all 10 byte for byte against the capture.* Put the live system files into the repo layout exactly as running: `prometheus.yml`, provisioning, `blackbox.yml`, the vhost and the units. Test: byte-compare against the capture. That makes every later change a readable diff against what runs today.
-3. **Test rig.** A WSL Ubuntu 24.04 distro, `monitoring-synctest`, with the same binaries and Grafana .deb as the VM. It has:
+3. **Test rig.** *Done 18 Nov 2026: `tests/rig/`. All 19 production targets scrape on the rig. With citiq down and scripts stalling in the TLS handshake, the unchanged production config sent one `[FIRING:1] SiteDown (1Stream Alerts critical)` email with `[no value]` annotations and values `B0`/`B1`, as in production. The production addresses are recreated on loopback. nginx holds 0.0.0.0:443, so the fake uc and scripts sites listen on 8443 and a NAT rule sends 443 to them.* A WSL Ubuntu 24.04 distro, `monitoring-synctest`, with the same binaries and Grafana .deb as the VM. It has:
    - a local blackbox target that can be switched between up, slow and down
    - fake node targets
    - an SMTP sink that saves every email Grafana sends
@@ -153,6 +153,7 @@ Each step is committed and tested before the next. The repo is personal, so step
 - What runs on the scripts server around 23:00 that stalls TLS handshakes.
 - The 5s DNS retries on the monitoring VM.
 - The dashboards. Grafana 13 keeps them in its unified storage, so the capture didn't get them. Export the live ones through the API and keep them in `grafana/dashboards/`.
+- `grafana.ini` on the VM has the `[smtp]` block appended twice (the setup script ran twice). Harmless, since Grafana takes the last one, but worth tidying by hand.
 - HighSystemLoad uses a fixed 4.0 rather than a per-VM CPU count.
 - Prometheus and blackbox_exporter are upstream tarballs, not apt packages.
 
