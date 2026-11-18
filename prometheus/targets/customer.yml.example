@@ -1,0 +1,54 @@
+# /etc/prometheus/targets/customer.yml.example
+#
+# Template for one customer's targets. Copy it to
+#   /etc/prometheus/targets/customers/<customer>.yml
+# replace every <...>, check it, and Prometheus picks it up within seconds:
+#   sudo cp /etc/prometheus/targets/customer.yml.example /etc/prometheus/targets/customers/acme-v2.yml
+#   sudo nano /etc/prometheus/targets/customers/acme-v2.yml
+#   python3 /opt/prometheus-azure-build/tools/check-targets.py
+#
+# Rules (check-targets.py enforces them):
+#   - <customer> is the file name without .yml: lower case, digits and
+#     hyphens, e.g. acme-v2. It goes in every `customer` label.
+#   - job is node-<customer>-odoo, node-<customer>-pg, postgres-<customer>-pg
+#     or blackbox-<customer>.
+#   - vm is the Azure VM name in lower case, e.g. cx-app-vm-009. Use the same
+#     vm for the node and postgres targets on the same VM.
+#   - The Odoo probe targets the internal IP on 8069, never the public URL.
+#     The nginx pair's geo-blocking would stop the probe.
+#
+# The exporters must already be running on the customer's VMs
+# (exporters/setup-customer-exporters.sh).
+#
+# To stop monitoring a customer, delete the file, then purge its history:
+#   sudo bash /opt/prometheus-azure-build/tools/remove-customer.sh <customer>
+
+# Odoo VM: node_exporter
+- targets: ['<ODOO-VM-IP>:9100']
+  labels:
+    job: node-<customer>-odoo
+    customer: <customer>
+    vm: <odoo-vm-name>
+    role: odoo
+
+# Postgres VM: node_exporter
+- targets: ['<PG-VM-IP>:9100']
+  labels:
+    job: node-<customer>-pg
+    customer: <customer>
+    vm: <pg-vm-name>
+    role: postgres
+
+# Postgres VM: postgres_exporter
+- targets: ['<PG-VM-IP>:9187']
+  labels:
+    job: postgres-<customer>-pg
+    customer: <customer>
+    vm: <pg-vm-name>
+    role: postgres
+
+# Odoo, probed on its internal IP
+- targets: ['http://<ODOO-VM-IP>:8069']
+  labels:
+    job: blackbox-<customer>
+    customer: <customer>

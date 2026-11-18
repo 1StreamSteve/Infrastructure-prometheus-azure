@@ -1,0 +1,11 @@
+# /etc/prometheus/targets/external.yml
+# External HTTPS sites probed from Azure. Managed in git: sync.sh overwrites it.
+#
+# To add one: a new entry with job blackbox-ext-<site>, category external and
+# site <site>, where <site> is short, lower case, with hyphens.
+
+- targets: ['https://uc.1stream.co.za']
+  labels: {job: blackbox-ext-uc-voice-platform, category: external, site: uc-voice-platform}
+
+- targets: ['https://scripts.1stream.co.za']
+  labels: {job: blackbox-ext-scripts-v1-platform, category: external, site: scripts-v1-platform}

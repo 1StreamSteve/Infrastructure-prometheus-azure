@@ -1,5 +1,5 @@
 {
-  "_comment": "Production scrape and probe addresses, recreated on the rig's loopback so the production config runs unchanged. A site with listen set really listens there and rig-net NATs bind to it (nginx holds 0.0.0.0:443). Keep in step with prometheus/ and the customer files.",
+  "_comment": "Production scrape and probe addresses (10.9.0.x is a spare test customer, not production), recreated on the rig's loopback so the production config runs unchanged. A site with listen set really listens there and rig-net NATs bind to it (nginx holds 0.0.0.0:443). Keep in step with prometheus/ and the customer files.",
   "exporters": {
     "127.0.0.1:9100": {"type": "node",     "nodename": "Monitoring-VM-001"},
     "10.0.0.4:9100":  {"type": "node",     "nodename": "CX-Nginx-VM-001"},
@@ -14,12 +14,16 @@
     "10.2.0.5:9187":  {"type": "postgres"},
     "10.5.0.4:9100":  {"type": "node",     "nodename": "CX-App-VM-005"},
     "10.5.0.5:9100":  {"type": "node",     "nodename": "CX-DB-VM-005"},
-    "10.5.0.5:9187":  {"type": "postgres"}
+    "10.5.0.5:9187":  {"type": "postgres"},
+    "10.9.0.4:9100":  {"type": "node",     "nodename": "CX-App-VM-009"},
+    "10.9.0.5:9100":  {"type": "node",     "nodename": "CX-DB-VM-009"},
+    "10.9.0.5:9187":  {"type": "postgres"}
   },
   "sites": {
     "stagezero":   {"bind": "10.1.0.4:8069"},
     "om-pfdirect": {"bind": "10.2.0.4:8069"},
     "citiq":       {"bind": "10.5.0.4:8069"},
+    "rigtest":     {"bind": "10.9.0.4:8069"},
     "uc":          {"bind": "127.0.0.2:443", "listen": "127.0.0.2:8443", "tls": true, "host": "uc.1stream.co.za"},
     "scripts":     {"bind": "127.0.0.3:443", "listen": "127.0.0.3:8443", "tls": true, "host": "scripts.1stream.co.za"}
   }

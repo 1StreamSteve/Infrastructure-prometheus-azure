@@ -62,7 +62,7 @@ EOF
 log "apt packages"
 apt-get update -qq
 apt-get install -y -qq curl ca-certificates openssl python3 python3-yaml python3-aiosmtpd \
-    nginx fail2ban ufw jq sqlite3 adduser libfontconfig1 musl iproute2 iptables >/dev/null
+    nginx fail2ban ufw jq sqlite3 adduser libfontconfig1 musl iproute2 iptables git >/dev/null
 
 mkdir -p "$CACHE"
 fetch() { [[ -s "$CACHE/$2" ]] || curl -fsSL "$1" -o "$CACHE/$2"; }

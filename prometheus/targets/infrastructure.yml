@@ -1,0 +1,19 @@
+# /etc/prometheus/targets/infrastructure.yml
+# The monitoring VM and the nginx pair. Managed in git: sync.sh overwrites it.
+# Job and label values are kept exactly as they were in the June build, so
+# series history carries on.
+
+- targets: ['localhost:9100']
+  labels: {job: node-monitoring, customer: infrastructure, vm: monitoring-001, role: monitoring}
+
+- targets: ['10.0.0.4:9100']
+  labels: {job: node-nginx-vm1, customer: infrastructure, vm: nginx-001, role: nginx}
+
+- targets: ['10.0.0.4:9113']
+  labels: {job: nginx-vm1, customer: infrastructure, vm: nginx-001, role: nginx}
+
+- targets: ['10.0.0.5:9100']
+  labels: {job: node-nginx-vm2, customer: infrastructure, vm: nginx-002, role: nginx}
+
+- targets: ['10.0.0.5:9113']
+  labels: {job: nginx-vm2, customer: infrastructure, vm: nginx-002, role: nginx}

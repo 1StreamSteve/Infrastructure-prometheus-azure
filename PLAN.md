@@ -129,7 +129,16 @@ Each step is committed and tested before the next. The repo is personal, so step
    - an SMTP sink that saves every email Grafana sends
 
    Scripted in `tests/` so it can be rebuilt. Test: the baseline config runs and reproduces today's `[no value]` email.
-4. **Customer files (issue 2).** New `prometheus.yml`, the infrastructure and external target files, the template, `check-targets.py` and the migration script. Tests on the rig:
+4. **Customer files (issue 2).** *Done 18 Nov 2026. `tests/step4-customer-files.sh`: 35 PASS, 0 FAIL on the rig.*
+   - *Starting from the live `prometheus.yml` (the baseline commit), the migration proved equivalence and wrote three customer files.*
+   - *The 19 targets before and after differed only in the three postgres `vm` labels. Rule selectors still match.*
+   - *The checker passes the real files and rejects 11 kinds of broken file.*
+   - *A new customer file was scraped within seconds and a deleted one dropped, with no reload.*
+   - *A broken file keeps its last good targets (Prometheus logs "Error reading file") and doesn't affect other customers.*
+   - *External probes stay at 60s here. The move to 30s is part of step 5.*
+   - *A Prometheus restart leaves the old postgres series visible for 5 minutes; a reload should mark them stale at once. Step 6 must prove that `sync.sh` reloads.*
+
+   New `prometheus.yml`, the infrastructure and external target files, the template, `check-targets.py` and the migration script. Tests on the rig:
    - target labels identical before and after the migration, apart from the postgres `vm` label
    - a new file is picked up without a reload, and a deleted file drops its targets
    - a broken file is caught by the checker, and Prometheus keeps running

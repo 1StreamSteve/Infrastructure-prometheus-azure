@@ -5,9 +5,23 @@
 # This is the rig's stand-in until sync.sh exists (step 6). After that the rig
 # is deployed with sync.sh itself, the same way as the server.
 
+#
+#   rig-deploy.sh               deploy the working tree
+#   rig-deploy.sh --ref <ref>   deploy the files as they were at a git commit
+#                               (e.g. the baseline, to rerun a migration test)
+
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 log() { echo "[rig-deploy] $*"; }
+
+if [[ "${1:-}" == "--ref" ]]; then
+    ref=${2:?--ref needs a commit}
+    tree=$(mktemp -d /tmp/rig-ref.XXXXXX)
+    trap 'rm -rf "$tree"' EXIT
+    git -c safe.directory='*' -C "$REPO" archive "$ref" | tar -x -C "$tree"
+    log "deploying $ref ($(git -c safe.directory='*' -C "$REPO" log -1 --format='%h %s' "$ref"))"
+    REPO=$tree
+fi
 
 declare -A APPLY=()
 while read -r src dest owner mode apply; do

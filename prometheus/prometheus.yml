@@ -1,8 +1,22 @@
 # /etc/prometheus/prometheus.yml
-# 1Stream Monitoring VM — Prometheus scrape config
+# Monitoring-VM-001: Prometheus scrape config. Managed in git
+# (Infrastructure-prometheus-azure). Do not edit on the server: sync.sh
+# overwrites it.
 #
-# To add a new customer, copy the "customer template" block at the bottom
-# and replace <CUSTOMER> and <CUSTOMER-*-IP> with the real values.
+# Targets live in files, not here:
+#   targets/infrastructure.yml   monitoring VM and the nginx pair      (git)
+#   targets/external.yml         external HTTP probes                  (git)
+#   targets/customers/*.yml      one file per customer                 (server only)
+#
+# Adding or removing a customer is a file in targets/customers/. Prometheus
+# picks a new, changed or deleted file up by itself, with no reload. Check the
+# file first:
+#   python3 /opt/prometheus-azure-build/tools/check-targets.py
+# The template is targets/customer.yml.example.
+#
+# Every target sets its own `job` label (e.g. node-citiq-v2-odoo). Prometheus
+# only uses job_name when a target has no job label, so the job names below are
+# just scrape pools. Each pool keeps the targets whose job matches its prefix.
 
 global:
   scrape_interval:     15s
@@ -15,251 +29,79 @@ rule_files: []
 
 scrape_configs:
 
-  # ═══════════════════════════════════════════════════════════════════════════
-  # INFRASTRUCTURE — Monitoring VM + nginx load balancers
-  # ═══════════════════════════════════════════════════════════════════════════
+  # node_exporter: monitoring VM, nginx pair, customer Odoo and Postgres VMs
+  - job_name: 'node'
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/infrastructure.yml
+          - /etc/prometheus/targets/customers/*.yml
+    relabel_configs:
+      - source_labels: [job]
+        regex: 'node-.+'
+        action: keep
 
-  # ── Monitoring VM itself ─────────────────────────────────────────────────
-  - job_name: 'node-monitoring'
-    static_configs:
-      - targets: ['localhost:9100']
-        labels:
-          vm:       'monitoring-001'
-          role:     'monitoring'
-          customer: 'infrastructure'
+  # nginx exporter on the nginx pair
+  - job_name: 'nginx'
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/infrastructure.yml
+    relabel_configs:
+      - source_labels: [job]
+        regex: 'nginx-.+'
+        action: keep
 
-  # ── VM1 — nginx exporter ─────────────────────────────────────────────────
-  - job_name: 'nginx-vm1'
-    static_configs:
-      - targets: ['10.0.0.4:9113']
-        labels:
-          vm:       'nginx-001'
-          role:     'nginx'
-          customer: 'infrastructure'
+  # postgres_exporter on customer Postgres VMs
+  - job_name: 'postgres'
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/customers/*.yml
+    relabel_configs:
+      - source_labels: [job]
+        regex: 'postgres-.+'
+        action: keep
 
-  # ── VM1 — node exporter ──────────────────────────────────────────────────
-  - job_name: 'node-nginx-vm1'
-    static_configs:
-      - targets: ['10.0.0.4:9100']
-        labels:
-          vm:       'nginx-001'
-          role:     'nginx'
-          customer: 'infrastructure'
+  # Customer Odoo, probed on the internal IP:8069 through blackbox_exporter.
+  # http_2xx_lenient: Odoo answers HTTP/1.0, which http_2xx rejects.
+  - job_name: 'blackbox-customer'
+    scrape_interval: 30s
+    scrape_timeout:  15s
+    metrics_path: /probe
+    params:
+      module: [http_2xx_lenient]
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/customers/*.yml
+    relabel_configs:
+      - source_labels: [job]
+        regex: 'blackbox-.+'
+        action: keep
+      - source_labels: [job]
+        regex: 'blackbox-ext-.+'
+        action: drop
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
 
-  # ── VM2 — nginx exporter ─────────────────────────────────────────────────
-  - job_name: 'nginx-vm2'
-    static_configs:
-      - targets: ['10.0.0.5:9113']
-        labels:
-          vm:       'nginx-002'
-          role:     'nginx'
-          customer: 'infrastructure'
-
-  # ── VM2 — node exporter ──────────────────────────────────────────────────
-  - job_name: 'node-nginx-vm2'
-    static_configs:
-      - targets: ['10.0.0.5:9100']
-        labels:
-          vm:       'nginx-002'
-          role:     'nginx'
-          customer: 'infrastructure'
-
-  # ============================================================================
-  #
-  # External Sites to Monitor
-  #
-  # ===========================================================================
-
-  - job_name: 'blackbox-ext-uc-voice-platform'
+  # External HTTPS sites, probed from Azure through blackbox_exporter
+  - job_name: 'blackbox-external'
     scrape_interval: 60s
-    scrape_timeout: 15s
+    scrape_timeout:  15s
     metrics_path: /probe
     params:
       module: [http_2xx]
-    static_configs:
-      - targets: ['https://uc.1stream.co.za']
-        labels:
-          category: 'external'
-          site: 'uc-voice-platform'
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/external.yml
     relabel_configs:
+      - source_labels: [job]
+        regex: 'blackbox-ext-.+'
+        action: keep
       - source_labels: [__address__]
         target_label: __param_target
       - source_labels: [__param_target]
         target_label: instance
       - target_label: __address__
         replacement: 127.0.0.1:9115
-
-
-  - job_name: 'blackbox-ext-scripts-v1-platform'
-    scrape_interval: 60s
-    scrape_timeout: 15s
-    metrics_path: /probe
-    params:
-      module: [http_2xx]
-    static_configs:
-      - targets: ['https://scripts.1stream.co.za']
-        labels:
-          category: 'external'
-          site: 'scripts-v1-platform'
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: 127.0.0.1:9115
-
-
-  # ==========================================================================
-  # CUSTOMER: stagezero-v2
-  # ==========================================================================
-
-  # ── customer-tenant Odoo VM — node exporter--------------------------------
-  - job_name: 'node-stagezero-v2-odoo'
-    static_configs:
-      - targets: ['10.1.0.4:9100']
-        labels:
-          vm:       'cx-app-vm-001'
-          role:     'odoo'
-          customer: 'stagezero-v2'
-
-  # ── customer-tenant Postgres VM — node exporter ──────────────────────────
-  - job_name: 'node-stagezero-v2-pg'
-    static_configs:
-      - targets: ['10.1.0.5:9100']
-        labels:
-          vm:       'cx-db-vm-001'
-          role:     'postgres'
-          customer: 'stagezero-v2'
-
-  # ── customer-tenant Postgres VM — postgres exporter ──────────────────────
-  - job_name: 'postgres-stagezero-v2-pg'
-    static_configs:
-      - targets: ['10.1.0.5:9187']
-        labels:
-          vm:       'stagezero-v2-pg'
-          role:     'postgres'
-          customer: 'stagezero-v2'
-
-  # ── Blackbox HTTP probes ──────────────────────────────────────────
-  - job_name: 'blackbox-stagezero-v2'
-    metrics_path: /probe
-    params:
-      module: [http_2xx_lenient]
-    scrape_interval: 30s
-    scrape_timeout: 15s
-    static_configs:
-      - targets:
-          - http://10.1.0.4:8069
-        labels:
-          customer: 'stagezero-v2'
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: 127.0.0.1:9115
-
- # ========================================================================== 
- # CUSTOMER: om-pfdirect-v2
- # ===========================================================================
-  - job_name: 'node-om-pfdirect-v2-odoo'
-    static_configs:
-      - targets: ['10.2.0.4:9100']
-        labels:
-          vm:       'cx-app-vm-002'
-          role:     'odoo'
-          customer: 'om-pfdirect-v2'
-
- # ── om-pfdirect-v2 Postgres VM — node exporter ──────────────────────────
-  - job_name: 'node-om-pfdirect-v2-pg'
-    static_configs:
-       - targets: ['10.2.0.5:9100']
-         labels:
-           vm:       'cx-db-vm-002'
-           role:     'postgres'
-           customer: 'om-pfdirect-v2'
-
- # ── om-pfdirect-v2 Postgres VM — postgres exporter ──────────────────────
-  - job_name: 'postgres-om-pfdirect-v2-pg'
-    static_configs:
-      - targets: ['10.2.0.5:9187']
-        labels:
-           vm:         'om-pfdirect-v2-pg'
-           role:       'postgres'
-           customer:   'om-pfdirect-v2'
-
-  # ── Blackbox HTTP probes ──────────────────────────────────────────
-  - job_name: 'blackbox-om-pfdirect-v2'
-    metrics_path: /probe
-    params:
-      module: [http_2xx_lenient]
-    scrape_interval: 30s
-    scrape_timeout: 15s
-    static_configs:
-      - targets:
-          - http://10.2.0.4:8069
-        labels:
-          customer: 'om-pfdirect-v2'
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: 127.0.0.1:9115
-
- # ==========================================================================
- # CUSTOMER: citiq-v2
- # ===========================================================================
-
-  - job_name: 'node-citiq-v2-odoo'
-    static_configs:
-      - targets: ['10.5.0.4:9100']
-        labels:
-          vm:             'cx-app-vm-005'
-          role:           'odoo'
-          customer:       'citiq-v2'
-
- # ── citiq-v2 Postgres VM — node exporter ──────────────────────────
-
-  - job_name: 'node-citiq-v2-pg'
-    static_configs:
-    - targets: ['10.5.0.5:9100']
-      labels:
-        vm:               'cx-db-vm-005'
-        role:             'postgres'
-        customer:         'citiq-v2'
-
- # ── citiq-v2 Postgres VM — postgres exporter ─────────────────────
-
-  - job_name: 'postgres-citiq-v2-pg'
-    static_configs:
-      - targets: ['10.5.0.5:9187']
-        labels:
-          vm:         'citiq-v2-pg'
-          role:       'postgres'
-          customer:   'citiq-v2'
-
- # ── Blackbox HTTP probes ──────────────────────────────────────────
-
-  - job_name: 'blackbox-citiq-v2'
-    metrics_path: /probe
-    params:
-      module: [http_2xx_lenient]
-    scrape_interval: 30s
-    scrape_timeout: 15s
-    static_configs:
-      - targets:
-          - http://10.5.0.4:8069
-        labels:
-          customer: 'citiq-v2'
-    relabel_configs:
-      - source_labels:  [__address__]
-        target_label:   __param_target
-      - source_labels:  [__param_target]
-        target_label:   instance
-      - target_label:   __address__
-        replacement:   127.0.0.1:9115
-
