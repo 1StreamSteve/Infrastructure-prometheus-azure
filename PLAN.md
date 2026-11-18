@@ -129,7 +129,7 @@ Each step is committed and tested before the next. The repo is personal, so step
    - an SMTP sink that saves every email Grafana sends
 
    Scripted in `tests/` so it can be rebuilt. Test: the baseline config runs and reproduces today's `[no value]` email.
-4. **Customer files (issue 2).** *Done 18 Nov 2026. `tests/step4-customer-files.sh`: 35 PASS, 0 FAIL on the rig.*
+4. **Customer files (issue 2).** *Done 18 Nov 2026. `tests/step4-customer-files.sh`: 38 PASS, 0 FAIL on the rig (final run, on the final files, with the reload check reading Prometheus's own `/metrics`).*
    - *Starting from the live `prometheus.yml` (the baseline commit), the migration proved equivalence and wrote three customer files.*
    - *The 19 targets before and after differed only in the three postgres `vm` labels. Rule selectors still match.*
    - *The checker passes the real files and rejects 11 kinds of broken file.*
@@ -173,27 +173,39 @@ Each step is committed and tested before the next. The repo is personal, so step
    - *Rig finding for any rebuild: Ubuntu's `prometheus-node-exporter` creates `prometheus` as a system user and fails to install if a non-system `prometheus` user exists. Install the package before creating users, as the June script did.*
 
    `sync.sh`, `verify.sh`, `remove-customer.sh`, the deploy key and clone scripts. Test on the rig: dry run, apply, a deliberately broken change that rolls itself back, and `--restore`.
-7. **Runbook** for the change window, with rollback. Steve reviews it.
-8. **Change window (Steve).**
-   1. Pre-change restore point (`Invoke-PreChangeBackup.ps1` from the nginx repo).
-   2. **Patch Ubuntu first, on the old config** (added 18 Nov 2026 at Steve's request):
-      1. `apt full-upgrade` and reboot.
-      2. Verify every service comes back by itself and all 19 targets are up, before any config change, so a patching problem can't be confused with a config one.
-      3. Record the kernel before and after. The capture shows `6.17.0-1013-azure` (built 15 Apr 2026), 174 days up, and no newer kernel installed despite `unattended-upgrades`.
-      4. **CVE-2026-98432** (IPv4 TCP request-socket use-after-free, remote code execution, Ubuntu priority Critical, CVSS 9.8). From Ubuntu's tracker on 18 Nov 2026, for noble:
-
-         | Kernel package | Status |
-         |---|---|
-         | `linux-azure` 6.8 GA | Fixed in 6.8.0-1073.82 |
-         | `linux-azure-6.17` (this VM's line) | End of life, never fixed |
-         | `linux-azure-7.0` (the next HWE) | Vulnerable, fix in progress |
-
-         The VM's `linux-azure` metapackage rolls onto HWE, so a plain `full-upgrade` lands on a vulnerable 7.0 kernel. The runbook either moves the VM to the 6.8 GA Azure kernel (≥ 6.8.0-1073.82) or patches again once the 7.0 fix is released. Steve to choose. Confirm the exact package names on the VM with `apt-cache policy` before the runbook names them. Verify with `uname -r` after the reboot, and say plainly whether the VM has the fix.
-      5. Outside this change: the nginx pair (internet-facing) ran `6.14.0-1017-azure` on 17 Nov, also end of life and vulnerable. That belongs in the nginx repo as its own urgent change.
-   3. Deploy key, clone.
-   4. Run the migration, then `sync.sh`, then `verify.sh`.
-   5. Contact point test, and a real test alert through to SMS.
+7. **Runbook.** *Done 18 Nov 2026: `docs/RUNBOOK-2026-11-monitoring-change.md`, for Steve to review.*
+   - *Every step was rehearsed on the rig, including B6, the live test alert: OdooVmDown for a test customer on a dead address. The firing email and SMS came 110s after the file was written, and the resolved pair 301s after `remove-customer.sh`.*
+   - *The expected `8 change(s) pending` was worked out against the 18 Nov capture.*
+   - *`tools/azure/Invoke-PreChangeBackup.ps1` is the nginx repo's script, retargeted to Monitoring-VM-001 (same vault as CX-Nginx-VM-001).*
+8. **Change window (Steve).** No patching in this change (Steve, 18 Nov 2026: Ubuntu updates and the kernel are their own change, step 10).
+   1. Part A ahead of the window: deploy key, add it to the repo, clone.
+   2. Pre-change restore point.
+   3. Run the migration, then `sync.sh`, then `verify.sh`.
+   4. A real test alert through to SMS, then removed with `remove-customer.sh`.
 9. **Close-out.** Mode 6 KB guides: updating the monitoring VM, adding and removing a customer. Then move the repo to the org.
+10. **Ubuntu patching and the kernel, as their own change (Steve, 18 Nov 2026).** Not yet planned.
+    - **Research first**, written up so it also serves the nginx pair:
+      - the Azure GA and HWE kernel lines on 24.04
+      - exact package names, checked with `apt-cache`
+      - how to switch and pin
+      - the rollback if a VM won't boot (GRUB, serial console, restore point)
+      - any Azure-specific points
+      - how to confirm the CVE-2026-98432 fix is in
+    - **What is known so far (18 Nov 2026):**
+      - Monitoring-VM-001 runs `6.17.0-1013-azure` (built 15 Apr 2026), 174 days up, with no newer kernel installed despite `unattended-upgrades`.
+      - Its kernel metapackages are `linux-azure`, `linux-image-azure`, `linux-headers-azure`, `linux-tools-azure` and `linux-cloud-tools-azure`, with no holds.
+      - The nginx pair ran `6.14.0-1017-azure` on 17 Nov, with 6.17 installed but not booted.
+    - **CVE-2026-98432** (IPv4 TCP request-socket use-after-free, remote code execution, Ubuntu priority Critical, CVSS 9.8). From Ubuntu's tracker on 18 Nov 2026, for noble:
+
+      | Kernel package | Status |
+      |---|---|
+      | `linux-azure` 6.8 GA | Fixed in 6.8.0-1073.82 |
+      | `linux-azure-6.14`, `linux-azure-6.17` | End of life, never fixed |
+      | `linux-azure-7.0` (the next HWE) | Vulnerable, fix in progress |
+
+      The VMs' `linux-azure` metapackage rolls onto HWE, so a plain `full-upgrade` lands on a vulnerable 7.0 kernel. The options are to move to the 6.8 GA Azure kernel (≥ 6.8.0-1073.82), or to patch now and again once the 7.0 fix is out.
+    - **Then the change on Monitoring-VM-001.** Patch, reboot, and check every service comes back and all targets are up. Check the kernel against the CVE, and say plainly whether the VM has the fix.
+    - **The nginx pair** (internet-facing) is its own urgent change in the nginx repo.
 
 ## Follow-ups, not in this change
 
